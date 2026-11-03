@@ -1,0 +1,10 @@
+{
+  "parent_source": "metaskill-appworld/baselines/reme2f37a15/benchmark/appworld/prompt.py",
+  "parent_symbol": "NEW_PROMPT_TEMPLATE",
+  "parent_file_sha256": "05df639d25935ab5d6093943199213df2df08fe14fc5ed529ed898e37594bfcf",
+  "initial_execution_prompt_sha256": "3c719f7c37a6bc777fcc19f2d0759e3926925eb3bab7227ae61f80843f5df889",
+  "initially_identical_files": [
+    "execution_base.txt",
+    "execution_direct.txt"
+  ]
+}

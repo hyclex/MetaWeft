@@ -1,0 +1,16 @@
+{
+  "variant_id": "metaweft-direct-v1",
+  "parent_variant": "metaweft-base-v1",
+  "parent_source": "MetaWeft base v1 executor and benchmark integration, derived from metaskill-appworld/baselines/reme2f37a15/benchmark/appworld/appworld_react_agent.py and prompt.py; bundled upstream 2f37a159b72a04ac1885a7db7f1a663a833e7791; inspected sibling checkout 2bd51dabc0e84c2d6aa9f9db66e630a78f58ab94 with local changes. Reuses sibling AppWorld loader/evaluator, common runner/episodes/lm_logger, and runtime/provenance helpers. Every run preserves actual framework and sibling source snapshots and resolved prompts.",
+  "hypothesis": "Measure task performance and total provider usage with the same executor controls while all procedural-memory stages are disabled, providing a reference comparison for metaweft-base-v1.",
+  "intended_differences": "Disable memory storage, retrieval, adaptation, reflection, and consolidation. Use a separate editable executor prompt initially matching base's instructions. Keep task selection/order, model, execution budget, stopping behavior, feedback boundary, official evaluation, and logging controls matched.",
+  "memory_structure": "Disabled. No memory records or Elasticsearch index are created; Elasticsearch and embedding services are not initialized.",
+  "retrieval": "Disabled. No task or candidate embeddings, neighbor searches, or retrieved memory context.",
+  "adaptation": "Disabled. No adaptation call or memory guidance is inserted into the task context.",
+  "execution_context": "Same ReMe-derived AppWorld ReAct executor as base: qwen3.8-flash, temperature 0.9, seed 0, thinking disabled, at most 40 interactions, and one primary trial. Dedicated versioned direct executor prompt. At most three physical transient attempts per logical chat call, 1/5-second waits, 120-second per-attempt timeout, and no extra LLM structured-output repair. Shared official loading/evaluation and canonical task logs are retained. AppWorld environment random_seed=100 is distinct from the model seed.",
+  "evidence_update": "No reflection, candidate generation, memory mutation, or post-update model calls. Preserve native execution logs and official evaluation artifacts for research inspection and accounting only.",
+  "feedback_access": "Executor receives task/API descriptions and environment observations; no reference solutions, private evaluator data, official assertion reports, or post-task reward are fed back into execution. Official evaluation artifacts remain separate from agent inputs.",
+  "memory_lifetime": "No persistent procedural memory. Every invocation and split has isolated execution outputs/state; tasks run once in existing manifest order. No training, warm-start import, resume, or task parallelism.",
+  "setting": "direct",
+  "failure_reporting": "Completion means the requested stream and evaluation finished, not that every task was solved. Missing canonical logging, provenance, execution outputs, or evaluation is fatal. Provider attempts and missing usage remain visible; unknown dollar cost is not zero."
+}
