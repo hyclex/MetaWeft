@@ -4,14 +4,46 @@ import math
 import time
 import uuid
 
+from .config import retry_defaults, validate_retry
+
+
+class LLMUnavailableError(RuntimeError):
+    """The physical attempt budget was exhausted; stop the task stream."""
+
+    def __init__(self, *, operation, phase, logical_call_id, attempts, cause):
+        super().__init__(f"{operation} unavailable in {phase} after {attempts} attempts: "
+                         f"{type(cause).__name__}: {cause}")
+        self.operation = operation
+        self.phase = phase
+        self.logical_call_id = logical_call_id
+        self.attempts = attempts
+
+
+class InvalidResponseError(ValueError):
+    """A recorded provider response cannot be consumed by this service."""
+
 
 class ModelClient:
     def __init__(
         self, *, api_key=None, base_url=None, chat_model,
         embedding_model="text-embedding-3-large", dimensions=1024,
         recorder=None, chat_timeout=120, embedding_timeout=30,
+        max_retries=None, retry_delay_seconds=None,
         client=None, sleep=time.sleep,
     ):
+        defaults = retry_defaults() if max_retries is None or retry_delay_seconds is None else {}
+        retry = validate_retry(
+            defaults["max_retries"] if max_retries is None else max_retries,
+            defaults["retry_delay_seconds"] if retry_delay_seconds is None else retry_delay_seconds,
+        )
+        for name, value in (("chat_model", chat_model), ("embedding_model", embedding_model)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a nonempty string")
+        if type(dimensions) is not int or dimensions <= 0:
+            raise ValueError("dimensions must be a positive integer")
+        for name, value in (("chat_timeout", chat_timeout), ("embedding_timeout", embedding_timeout)):
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be a positive finite number")
         if client is None:
             from openai import OpenAI
 
@@ -24,30 +56,54 @@ class ModelClient:
         self.chat_timeout = chat_timeout
         self.embedding_timeout = embedding_timeout
         self.sleep = sleep
+        self.max_retries = retry["max_retries"]
+        self.retry_delay_seconds = retry["retry_delay_seconds"]
 
-    @staticmethod
-    def _transient(error):
-        from openai import APIConnectionError, APIStatusError
-
-        return isinstance(error, APIConnectionError) or (
-            isinstance(error, APIStatusError)
-            and (error.status_code in (408, 409, 429) or error.status_code >= 500)
-        )
-
-    def _invoke(self, operation, request, invoke, *, phase, component, step):
+    def _invoke(self, operation, request, invoke, validate, *, phase, component, step):
         logical_call_id = uuid.uuid4().hex
-        for attempt in range(1, 4):
+        for attempt in range(1, self.max_retries + 2):
+            provider_error = None
+
+            def physical_call():
+                nonlocal provider_error
+                try:
+                    return invoke()
+                except Exception as error:
+                    provider_error = error
+                    raise
+
             try:
                 if self.recorder is None:
-                    return invoke()
-                return self.recorder(
-                    operation, request, invoke, phase=phase, component=component,
-                    logical_call_id=logical_call_id, attempt=attempt, step=step,
-                )
+                    response = physical_call()
+                else:
+                    response = self.recorder(
+                        operation, request, physical_call, phase=phase, component=component,
+                        logical_call_id=logical_call_id, attempt=attempt, step=step,
+                    )
             except Exception as error:
-                if not self._transient(error) or attempt == 3:
+                # A recorder failure must never cause a second provider call, even
+                # when its exception happens to resemble a transport failure.
+                if error is not provider_error:
                     raise
-                self.sleep((1, 5)[attempt - 1])
+                failure = error
+            else:
+                try:
+                    return validate(response)
+                except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
+                    failure = InvalidResponseError(str(error))
+            if attempt == self.max_retries + 1:
+                raise LLMUnavailableError(
+                    operation=operation, phase=phase, logical_call_id=logical_call_id,
+                    attempts=attempt, cause=failure,
+                ) from failure
+            self.sleep(self.retry_delay_seconds)
+
+    @staticmethod
+    def _chat_response(response):
+        text = response.choices[0].message.content
+        if not isinstance(text, str) or not text.strip():
+            raise InvalidResponseError("Chat response contains no text")
+        return response
 
     def chat(self, messages, *, phase, component, step=None, temperature=0.0, **kwargs):
         """Return the complete provider response, including content and usage."""
@@ -60,6 +116,7 @@ class ModelClient:
         return self._invoke(
             "chat", request,
             lambda: self.client.chat.completions.create(**request, timeout=self.chat_timeout),
+            self._chat_response,
             phase=phase, component=component, step=step,
         )
 
@@ -71,14 +128,17 @@ class ModelClient:
             "model": self.embedding_model, "input": list(texts),
             "dimensions": self.dimensions, "encoding_format": "float",
         }
-        response = self._invoke(
+        return self._invoke(
             "embedding", request,
             lambda: self.client.embeddings.create(**request, timeout=self.embedding_timeout),
+            lambda response: self._embedding_response(response, len(texts)),
             phase=phase, component=component, step=step,
         )
-        vectors = [None] * len(texts)
+
+    def _embedding_response(self, response, count):
+        vectors = [None] * count
         for item in response.data:
-            if not isinstance(item.index, int) or not 0 <= item.index < len(vectors):
+            if type(item.index) is not int or not 0 <= item.index < len(vectors):
                 raise ValueError("Embedding response contains an invalid input index")
             if vectors[item.index] is not None:
                 raise ValueError("Embedding response contains a duplicate input index")

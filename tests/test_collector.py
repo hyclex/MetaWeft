@@ -42,6 +42,7 @@ class CollectorTests(unittest.TestCase):
         invocation = {
             "baseline": baseline, "run_id": f"{baseline}-run", "run_directory": str(original),
             "status": status, "setting": setting, "note": "fixture",
+            "dataset_version": "2h",
             "scenario": scenario or ("online" if baseline == "ace" else "cold-start"),
             "phases": [phase],
         }
@@ -59,7 +60,7 @@ class CollectorTests(unittest.TestCase):
             ["bash", "tool/collect_appworld.sh"], cwd=self.workspace,
             capture_output=True, text=True, check=True,
         )
-        return (self.workspace / "res/raw_collect.md").read_text(encoding="utf-8"), result.stdout
+        return (self.workspace / "res/appworld_2h.md").read_text(encoding="utf-8"), result.stdout
 
     def test_separate_table_keeps_legacy_rows_and_uses_complete_phase_diagnostics(self):
         self.add_run("reme")
@@ -123,6 +124,16 @@ class CollectorTests(unittest.TestCase):
         })
         report, _ = self.collect()
         self.assertIn("Complete; degraded 0/2 tasks; evidence gaps 1 |", report)
+
+    def test_recovery_is_labeled_and_inherited_tasks_do_not_drive_eta(self):
+        self.add_run("metaweft", status="running", phase_diagnostics={
+            "status": "running", "started_at": "2020-01-01T00:00:00Z",
+            "completed_task_ids": ["one_1"], "reused_task_ids": ["one_1"],
+            "degraded_task_ids": [], "recovery": {"parent_run_id": "failed-parent"},
+        }, evaluation=False)
+        report, _ = self.collect()
+        self.assertIn("recovered from failed-parent; reused 1 tasks", report)
+        self.assertIn("ETA estimating (no new tasks completed)", report)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,8 @@ from openai import RateLimitError
 from appworld_experiments.code.common.episodes import EpisodeService
 from appworld_experiments.code.common.lm_logger import task_lm_logger
 from MetaWeft.experiment.appworld import executor, worker
-from MetaWeft.service.llm import ModelClient
+from MetaWeft.experiment.recovery import commit_checkpoint, write_json
+from MetaWeft.service.llm import LLMUnavailableError, ModelClient
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -94,11 +95,14 @@ class CanonicalRecorderTests(unittest.TestCase):
             provider = Mock()
             error = RateLimitError("retry", response=httpx.Response(
                 429, request=httpx.Request("POST", "https://provider.invalid/v1")), body={})
-            completion = {"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}}
-            provider.chat.completions.create.side_effect = [error, completion]
+            completion = {"choices": [{"message": {"content": "ok"}}],
+                          "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}}
+            value = response("ok")
+            value.model_dump = lambda: completion
+            provider.chat.completions.create.side_effect = [error, value]
             model = ModelClient(client=provider, chat_model="test", recorder=worker.physical_recorder(logger),
                                 sleep=Mock())
-            self.assertIs(model.chat([], phase="adaptation", component="base"), completion)
+            self.assertIs(model.chat([], phase="adaptation", component="base"), value)
             rows = [json.loads(line) for line in logger.path.read_text().splitlines()]
             self.assertEqual(len(rows), 2)
             self.assertEqual(len({row["id"] for row in rows}), 2)
@@ -194,10 +198,13 @@ class AdapterTests(unittest.TestCase):
         self.context = SimpleNamespace(task_id="fake_1", task=task, artifacts_dir=self.artifacts,
                                        primary_task_dir=self.primary)
         self.plan = {"setting": "direct", "source_framework": str(ROOT / "MetaWeft"),
+                     "run_directory": str(self.root), "recovery_identity": "test-identity",
                      "provider": {"chat_base_url": "https://provider.invalid/v1"},
                      "settings": {"chat_model": "test", "embedding_model": "embed",
-                                  "embedding_dimensions": 2, "max_interactions": 2}}
-        self.phase = {"output_directory": str(self.output)}
+                                  "embedding_dimensions": 2, "max_interactions": 2,
+                                  "max_retries": 0, "retry_delay_seconds": 0,
+                                  "chat_timeout": 120, "embedding_timeout": 30}}
+        self.phase = {"output_directory": str(self.output), "ordered_task_ids": ["fake_1"]}
         self.manifest = {"completed_task_ids": [], "degraded_task_ids": [], "degraded_reasons": {}}
         self.model = FakeModel(self.events)
         self.logger = task_lm_logger(self.output.parent, "split", "metaweft", "fake_1")
@@ -237,6 +244,12 @@ class AdapterTests(unittest.TestCase):
                                report="SECRET EVALUATOR ASSERTION")
 
     def run_adapter(self, pipeline=None, store=None):
+        if not (self.output / "checkpoint.json").is_file():
+            write_json(self.artifacts.parent / "memory_initial.json", {
+                "status": "verified" if self.plan["setting"] == "base" else "disabled", "records": []})
+            if self.plan["setting"] == "base":
+                write_json(self.artifacts.parent / "memory_mapping.json", {})
+            commit_checkpoint(self.plan, self.phase, [])
         adapter = worker.MetaWeftAdapter(self.plan, self.phase, self.manifest, pipeline, store)
         with patch.dict(os.environ, {"OPENAI_API_KEY": "fake-for-offline-tests"}), \
              patch.object(worker, "ModelClient", return_value=self.model), \
@@ -280,17 +293,38 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.events, ["open", "close", "evaluate", "cache_reset", "model_close"])
         self.assertEqual(self.manifest["completed_task_ids"], [])
 
+    def test_reused_task_never_constructs_a_model_or_reopens_the_world(self):
+        first = self.run_adapter()
+        self.events.clear()
+        with patch.object(worker, "ModelClient", side_effect=AssertionError("must not call")):
+            adapter = worker.MetaWeftAdapter(self.plan, self.phase, self.manifest)
+            second = adapter.run_task(self.context, self.services)
+        self.assertEqual(first.metadata, second.metadata)
+        self.assertEqual(self.events, [])
+
+    def test_required_memory_snapshot_failure_does_not_commit_task(self):
+        self.plan["setting"] = "base"
+        stage = SimpleNamespace(guidance="", degraded=False, to_dict=lambda: {})
+        pipeline = Mock(prepare_context=Mock(return_value=stage), post_task=Mock(return_value=stage))
+        store = Mock(export=Mock(side_effect=RuntimeError("store unavailable")))
+        with self.assertRaisesRegex(RuntimeError, "Cannot checkpoint"):
+            self.run_adapter(pipeline, store)
+        checkpoint = json.loads((self.output / "checkpoint.json").read_text())
+        self.assertEqual(checkpoint["completed_task_ids"], [])
+        self.assertEqual(self.manifest["completed_task_ids"], [])
+
 
 class WorkerMainTests(unittest.TestCase):
     def test_direct_main_passes_no_gt_and_never_constructs_memory_services(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "outputs/split"
+            output = root / "experiments/outputs/split"
             phase = {"output_directory": str(output), "dataset": "fake_dataset", "split": "split",
                      "experiment_name": "split", "ordered_task_ids": ["fake_1"],
                      "source_task_count": 2, "partial": True}
             plan = {"phases": [phase], "setting": "direct", "variant_id": "metaweft-direct-v1",
                     "run_id": "test", "scenario": "direct", "dataset_version": "2h", "note": "offline",
+                    "run_directory": str(root), "recovery_identity": "test-identity",
                     "settings": {"appworld_seed": 100}, "source_framework": str(ROOT / "MetaWeft")}
             plan_path = root / "plan.json"
             plan_path.write_text(json.dumps(plan))
@@ -300,6 +334,12 @@ class WorkerMainTests(unittest.TestCase):
                 self.assertTrue(kwargs["suppress_evaluation_errors"])
                 self.assertIsNone(kwargs["adapter"].pipeline)
                 self.assertIsNone(kwargs["adapter"].store)
+                kwargs["adapter"].manifest["completed_task_ids"] = ["fake_1"]
+                primary = output / "tasks/fake_1"
+                primary.mkdir(parents=True)
+                (primary / "evaluation").mkdir()
+                (primary / "evaluation/report.md").write_text("official fake task report")
+                write_json(output / "baseline_artifacts/metaweft/fake_1/result.json", {"degraded": []})
                 directory = output / "evaluations"
                 directory.mkdir()
                 (directory / "fake_dataset.json").write_text(json.dumps({"aggregate": {}, "individual": {"fake_1": {}}}))
@@ -319,6 +359,43 @@ class WorkerMainTests(unittest.TestCase):
             self.assertEqual(manifest["status"], "completed")
             initial = json.loads((output / "baseline_artifacts/metaweft/memory_initial.json").read_text())
             self.assertEqual(initial, {"status": "disabled", "records": []})
+
+
+class ResponseLoggingTests(unittest.TestCase):
+    def test_empty_text_retains_billed_tokens_before_successful_retry(self):
+        with TemporaryDirectory() as temporary:
+            output = Path(temporary) / "outputs/split"
+            logger = task_lm_logger(output.parent, "split", "metaweft", "fake_1")
+            empty, valid = response(""), response("ok")
+            empty.model_dump = lambda: {"choices": [{"message": {"content": ""}}],
+                                       "usage": {"prompt_tokens": 21192, "completion_tokens": 0, "total_tokens": 21192}}
+            valid.model_dump = lambda: {"choices": [{"message": {"content": "ok"}}], "usage": {"total_tokens": 3}}
+            provider = Mock()
+            provider.chat.completions.create.side_effect = [empty, valid]
+            model = ModelClient(client=provider, chat_model="test", max_retries=1, retry_delay_seconds=0,
+                                recorder=worker.physical_recorder(logger))
+            self.assertIs(model.chat([], phase="execution", component="react"), valid)
+            rows = [json.loads(line) for line in logger.path.read_text().splitlines()]
+            self.assertEqual([row["metadata"]["attempt"] for row in rows], [1, 2])
+            self.assertEqual(len({row["metadata"]["logical_call_id"] for row in rows}), 1)
+            self.assertEqual(worker.accounting(output)["reported_tokens"]["total_tokens"], 21195)
+
+    def test_malformed_embedding_envelopes_are_recorded_before_retry(self):
+        with TemporaryDirectory() as temporary:
+            output = Path(temporary) / "outputs/split"
+            logger = task_lm_logger(output.parent, "split", "metaweft", "fake_1")
+            invalid = SimpleNamespace(data=[SimpleNamespace(index=0, embedding=42)],
+                                      model_dump=lambda: {"data": [{"embedding": 42}], "usage": {"total_tokens": 2}})
+            valid = SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[0.1, 0.2])],
+                                    model_dump=lambda: {"data": [{"embedding": [0.1, 0.2]}], "usage": {"total_tokens": 2}})
+            provider = Mock()
+            provider.embeddings.create.side_effect = [invalid, valid]
+            model = ModelClient(client=provider, chat_model="test", dimensions=2, max_retries=1,
+                                retry_delay_seconds=0, recorder=worker.physical_recorder(logger))
+            self.assertEqual(model.embed(["a"], phase="retrieval", component="base"), [[0.1, 0.2]])
+            rows = [json.loads(line) for line in logger.path.read_text().splitlines()]
+            self.assertTrue(rows[0]["output"]["invalid_embedding_response"])
+            self.assertEqual(worker.accounting(output)["reported_tokens"]["total_tokens"], 4)
 
 
 if __name__ == "__main__":

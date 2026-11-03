@@ -59,3 +59,29 @@ Live tasks both succeeded, so failed-task learning and Defer were established
 by deterministic offline cases, not these live trajectories. Provider retry and
 missing-usage handling were likewise tested offline. Full experiments, resume,
 parallel task execution, and other benchmarks were not run.
+
+## Retry and recovery validation (2026-11-03)
+
+The reliability extension passes 78 offline tests in the prepared AppWorld
+interpreter. These include the real MetaWeft worker, memory pipeline, shared task
+runner, episode service and canonical logger with fake provider, world/evaluator
+and storage transports. Tests inject outages in every LLM stage, including after
+a confirmed partial memory update. They verify completed-task reuse, exact
+restoration of checkpoint documents/vectors, exclusion of partial updates,
+independent split resets, repeated recovery, finalization-only recovery, atomic
+checkpoint publication, source/runtime/data integrity checks, and unchanged
+parent artifacts. A subprocess test confirms imports resolve to copied saved
+source and rebuilt import links. No provider or Elasticsearch process is started.
+
+Canonical-log tests preserve reported tokens from empty text and malformed
+embedding responses. Recovery accounting includes inherited failed calls without
+double counting copied calls. Collector tests cover lineage labels and ETA based
+on newly completed work. Existing collector fixtures were aligned with the
+current dataset-specific report files and required `dataset_version` field.
+
+Both actual shell entrypoints pass two-task dry runs with five retries and a
+60-second delay recorded in settings, without creating run directories. Recovery
+dry runs use temporary new-format fixtures and make no writes or provider calls.
+Historical live runs above retain their original protocol and artifacts; they
+were not migrated or rerun. This extension has not been exercised in a paid live
+experiment and does not detect provider model substitution.

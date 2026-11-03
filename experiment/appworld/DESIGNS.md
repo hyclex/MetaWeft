@@ -2,7 +2,7 @@
 
 ## Ownership and lineage
 
-The entrypoints only select `base` or `direct`. The launcher owns fresh run
+The entrypoints only select `base` or `direct`. The launcher owns fresh and recovered run
 identity, task selection, source snapshots, runtime isolation, and phase
 processes. The worker owns benchmark integration and finalization. Variant code
 owns memory policy; generic services own provider and store operations.
@@ -47,7 +47,8 @@ missing outputs or failed evaluation are infrastructure errors.
 Each invocation lives under `raw_logs/metaweft-<setting>-<dataset>/experiment/output/`
 with a timestamp and random suffix. Each test split gets its own process, memory
 index, mutable databases, and state. Cache and temporary paths are invocation
-local. Read-only runtime/data assets may be shared. There is no resume path.
+local. Read-only runtime/data assets may be shared. Recovery creates another
+isolated invocation linked to the failed parent; it never edits that parent.
 
 Copy MetaWeft and the relevant current sibling source before executing workers;
 resolve imports to those copies rather than the live source tree. Preserve
@@ -55,6 +56,30 @@ prompts, descriptors, dependency records, source/data hashes, original and selec
 task manifests, and actual resolved settings. Shared immutable benchmark data are
 identified explicitly. Store mappings and full vectors accompany complete memory
 snapshots, allowing the learned state to be understood without a live ES process.
+
+Recovery-format v1 is implemented by `experiment/recovery.py`. Every future
+launcher must use its recovery argument, immutable identity/provenance checks,
+selection lock, and completed-task checkpoint contract. Fresh runs seal their
+resolved identity after source/data/runtime capture. Recovery selects a failed
+compatible new-format run, rejects active/completed lineages, validates its
+artifacts, and executes the captured worker and variant code. Current checkout
+defaults do not override saved settings. No legacy-log migration is inferred.
+
+Commit `checkpoint.json` atomically after native output validation, official
+evaluation, post-update work and a verified complete memory export. It records
+the contiguous completed prefix, next task, memory reference/mapping and artifact
+hashes. The checkpoint is authoritative if a subsequent manifest write failed.
+Task output files precede checkpoint publication; unavailable required memory
+snapshots prevent a commit. Initial checkpoints support failure in the first task.
+
+Recovery copies committed tasks and their relative evidence references. A fresh
+store restores IDs, full documents and vectors and verifies the resulting export.
+Incomplete-task outputs and partial updates are archived separately and never
+used as restored state. The adapter bypasses completed tasks before model calls
+or memory mutations, while the shared runner retains the full dataset for final
+evaluation. Completed phases are copied; unstarted splits still begin empty.
+Source import links are rebuilt inside the new directory, and caches/ES state
+are newly allocated. Repeated recovery carries all earlier failure evidence.
 
 ## Logging, failure, and collection
 
@@ -65,15 +90,22 @@ reflection, consolidation, embeddings, and retries; missing usage and unknown
 pricing must remain visible. Do not substitute custom traces for native AppWorld
 logs and output databases.
 
-Memory-stage fallback produces explicit stage results and degradation metadata.
+Exhausted provider calls stop the stream from every stage and preserve a structured
+failure record. Other memory-stage fallback produces explicit stage results and degradation metadata.
 A phase may finish with `status=completed` and nonempty `degraded_task_ids`;
 `degraded_reasons` records why. Confirmed prior candidate writes survive a later
 candidate failure, while remaining work is recorded as skipped. Missing logging,
 provenance, benchmark outputs, or official evaluation is fatal. Initial empty
-memory verification is also mandatory. Later unavailable snapshots remain
-explicit evidence gaps: task snapshot failures degrade the task; a failed final
+memory verification is also mandatory. Task checkpoint snapshot failures stop
+the stream; a failed optional final
 snapshot is preserved in phase `evidence_gaps` without rewriting completion as
 failure or presenting unavailable memory as an empty verified snapshot.
+
+Accounting deduplicates physical-call IDs across copied task logs and archived
+attempts. Top-level totals are cumulative; `current_attempt` and `inherited`
+subtotals distinguish newly incurred usage. Malformed response envelopes count as
+unknown usage when no numeric usage is reported. Collector rows label recovery
+lineage and reused tasks; ETA uses newly completed tasks in the current attempt.
 
 The invocation manifest uses `baseline=metaweft` and `setting=base|direct`, with
 phases retaining the established `ordered_task_ids`, `source_task_count`,

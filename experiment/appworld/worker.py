@@ -1,6 +1,5 @@
 """Execute one split from captured sources, with canonical AppWorld artifacts."""
 
-from collections import Counter
 from contextlib import nullcontext
 from datetime import datetime, timezone
 import json
@@ -13,17 +12,29 @@ from appworld.apps.model_lib import CachedDBHandler
 from appworld_experiments.code.common.appworld_runner import run_dataset
 from appworld_experiments.code.common.contracts import BaselineTaskResult
 from appworld_experiments.code.common.lm_logger import (
-    EmbeddingSerializer, LLMCallContext, OpenAISerializer, task_lm_logger,
+    EmbeddingSerializer, LLMCallContext, OpenAISerializer, redact_secrets, task_lm_logger,
 )
 from appworld_experiments.code.common.output_contract import validate_dataset_output, validate_task_output
 from appworld_experiments.code.common.task_loader import load_task_stream
 
 from MetaWeft.experiment.appworld.executor import execute
-from MetaWeft.service.llm import ModelClient
+from MetaWeft.experiment.recovery import (
+    accounting, commit_checkpoint, load_checkpoint, read_json, relative_file, restore_memory, write_json,
+)
+from MetaWeft.service.llm import LLMUnavailableError, ModelClient
 
 
-def write_json(path, value):
-    Path(path).write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+class SafeEmbeddingSerializer(EmbeddingSerializer):
+    def response(self, response):
+        raw = OpenAISerializer().response(response)
+        try:
+            return super().response(raw)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            # Malformed vectors still have billable usage. Preserve it without
+            # leaking full vector payloads or turning validation into log failure.
+            return {"invalid_embedding_response": True,
+                    "model": raw.get("model") if isinstance(raw, dict) else None,
+                    "usage": raw.get("usage") if isinstance(raw, dict) else None}
 
 
 def now():
@@ -36,7 +47,7 @@ def physical_recorder(logger):
             provider_call=invoke, request=request,
             context=LLMCallContext(phase=phase, component=component, logical_call_id=logical_call_id,
                                    attempt=attempt, step=step, episode_kind="primary"),
-            serializer=EmbeddingSerializer() if operation in ("embed", "embedding", "embeddings") else OpenAISerializer(),
+            serializer=SafeEmbeddingSerializer() if operation in ("embed", "embedding", "embeddings") else OpenAISerializer(),
         )
     return record
 
@@ -53,33 +64,6 @@ def snapshot_memory(store, path):
     return result
 
 
-def accounting(output):
-    phases, tokens = Counter(), Counter()
-    missing = 0
-    calls = 0
-    for path in output.glob("tasks/*/logs/lm_calls.jsonl"):
-        for line in path.read_text().splitlines():
-            call = json.loads(line)
-            calls += 1
-            phases[call["metadata"]["phase"]] += 1
-            usage = call["output"].get("usage")
-            if not usage:
-                missing += 1
-            else:
-                for key in ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens"):
-                    if isinstance(usage.get(key), (int, float)):
-                        tokens[key] += usage[key]
-    result = {
-        "recorded_calls": calls, "recorded_calls_by_phase": dict(phases), "reported_tokens": dict(tokens),
-        "missing_usage_calls": missing, "cost_usd": None,
-        "pricing_assumptions": "Provider rates unverified; unknown is not zero.",
-        "coverage": "All physical chat and embedding calls, including retries, across every invoked stage; no billed preflight.",
-        "retry_coverage": "SDK retries disabled; up to three explicit physical attempts per logical call.",
-    }
-    write_json(output / "accounting.json", result)
-    return result
-
-
 class MetaWeftAdapter:
     name = "metaweft"
 
@@ -88,10 +72,15 @@ class MetaWeftAdapter:
         self.pipeline, self.store = pipeline, store
         self.output = Path(phase["output_directory"])
         self.prompts = Path(plan["source_framework"]) / "src/base/prompts/v1"
+        self.checkpoint = read_json(self.output / "checkpoint.json")
 
     def run_task(self, context, services):
         from loguru import logger
         artifacts = context.artifacts_dir
+        if context.task_id in self.manifest["completed_task_ids"]:
+            return BaselineTaskResult(metadata=read_json(artifacts / "result.json"))
+        self.manifest["current_task_id"] = context.task_id
+        write_json(self.output / "run_manifest.json", self.manifest)
         spec = {
             "task_id": context.task_id, "instruction": context.task.instruction,
             "supervisor": {key: getattr(context.task.supervisor, key)
@@ -103,6 +92,10 @@ class MetaWeftAdapter:
                             chat_model=self.plan["settings"]["chat_model"],
                             embedding_model=self.plan["settings"]["embedding_model"],
                             dimensions=self.plan["settings"]["embedding_dimensions"],
+                            max_retries=self.plan["settings"]["max_retries"],
+                            retry_delay_seconds=self.plan["settings"]["retry_delay_seconds"],
+                            chat_timeout=self.plan["settings"]["chat_timeout"],
+                            embedding_timeout=self.plan["settings"]["embedding_timeout"],
                             recorder=physical_recorder(services.llm))
         stages = {}
         degraded = []
@@ -147,7 +140,7 @@ class MetaWeftAdapter:
                     degraded.append({"stage": "update", "reason": updated.error})
                 snapshot = snapshot_memory(self.store, artifacts / "memory_after.json")
                 if snapshot["status"] != "verified":
-                    degraded.append({"stage": "snapshot", "reason": snapshot["error"]})
+                    raise RuntimeError("Cannot checkpoint task memory: " + snapshot["error"])
             else:
                 stages["update"] = {"status": "disabled", "degraded": False}
             write_json(artifacts / "stages.json", stages)
@@ -161,7 +154,13 @@ class MetaWeftAdapter:
             for relative in ("logs/loggger.log", "misc/cost.txt"):
                 if not (context.primary_task_dir / relative).is_file():
                     raise FileNotFoundError(relative)
-            self.manifest["completed_task_ids"].append(context.task_id)
+            if sink is not None:
+                logger.remove(sink)
+                sink = None
+            completed_ids = [*self.manifest["completed_task_ids"], context.task_id]
+            self.checkpoint = commit_checkpoint(self.plan, self.phase, completed_ids, previous=self.checkpoint)
+            self.manifest["completed_task_ids"] = completed_ids
+            self.manifest["current_task_id"] = None
             if degraded:
                 self.manifest["degraded_task_ids"].append(context.task_id)
                 self.manifest["degraded_reasons"][context.task_id] = degraded
@@ -179,15 +178,19 @@ def main():
     plan = json.loads(Path(sys.argv[1]).read_text())
     phase = plan["phases"][int(sys.argv[2])]
     output = Path(phase["output_directory"])
-    output.mkdir(parents=True, exist_ok=False)
+    output.mkdir(parents=True, exist_ok=bool(plan.get("recovery")))
+    checkpoint = load_checkpoint(plan, phase, Path(plan["run_directory"]))
     manifest = {**phase, "baseline": "metaweft", "setting": plan["setting"], "variant_id": plan["variant_id"],
                 "run_id": plan["run_id"], "scenario": plan["scenario"], "dataset_version": plan["dataset_version"],
-                "note": plan["note"], "status": "running", "started_at": now(), "completed_task_ids": [],
-                "degraded_task_ids": [], "degraded_reasons": {}, "evidence_gaps": []}
+                "note": plan["note"], "status": "running", "started_at": now(),
+                "completed_task_ids": checkpoint["completed_task_ids"] if checkpoint else [],
+                "degraded_task_ids": list(phase.get("degraded_task_ids", [])),
+                "degraded_reasons": dict(phase.get("degraded_reasons", {})), "evidence_gaps": [],
+                "recovery": plan.get("recovery")}
     write_json(output / "run_manifest.json", manifest)
     write_json(output / "runner_config.json", plan["settings"])
     artifacts = output / "baseline_artifacts/metaweft"
-    artifacts.mkdir(parents=True)
+    artifacts.mkdir(parents=True, exist_ok=bool(plan.get("recovery")))
     store = None
     try:
         actual = [ref.task_id for ref in load_task_stream(phase["dataset"])]
@@ -199,23 +202,35 @@ def main():
         else:
             service = nullcontext(None)
         with service as url:
-            pipeline = None
-            if url is not None:
-                from MetaWeft.service.elasticsearch import ElasticsearchStore
-                from MetaWeft.src.base import BasePipeline, memory_index_body
-                index = "metaweft-" + plan["run_tag"].lower().replace("_", "-") + "-" + phase["split"]
-                store = ElasticsearchStore(url, index)
-                mapping = memory_index_body()
-                store.create(mapping)
-                write_json(artifacts / "index.json", {"index": index, "body": mapping})
-                initial = snapshot_memory(store, artifacts / "memory_initial.json")
-                if initial["status"] != "verified" or initial["records"]:
-                    raise RuntimeError("Cannot verify empty initial memory")
-                pipeline = BasePipeline(store, Path(plan["run_directory"]))
-            else:
-                write_json(artifacts / "memory_initial.json", {"status": "disabled", "records": []})
-            adapter = MetaWeftAdapter(plan, phase, manifest, pipeline, store)
             try:
+                pipeline = None
+                if url is not None:
+                    from MetaWeft.service.elasticsearch import ElasticsearchStore
+                    from MetaWeft.src.base import BasePipeline, memory_index_body
+                    index = "metaweft-" + plan["run_tag"].lower().replace("_", "-") + "-" + phase["split"]
+                    store = ElasticsearchStore(url, index)
+                    mapping = read_json(artifacts / "memory_mapping.json") if checkpoint else memory_index_body(
+                        plan["settings"]["embedding_dimensions"])
+                    store.create(mapping)
+                    write_json(artifacts / "index.json", {"index": index, "body": mapping})
+                    if checkpoint:
+                        if store.export():
+                            raise RuntimeError("Recovery requires a fresh empty memory index")
+                        restore_memory(store, read_json(relative_file(output, checkpoint["memory_file"])))
+                        restored = snapshot_memory(store, artifacts / "memory_restored.json")
+                        if restored["status"] != "verified":
+                            raise RuntimeError("Cannot verify restored memory")
+                    else:
+                        write_json(artifacts / "memory_mapping.json", mapping)
+                        initial = snapshot_memory(store, artifacts / "memory_initial.json")
+                        if initial["status"] != "verified" or initial["records"]:
+                            raise RuntimeError("Cannot verify empty initial memory")
+                    pipeline = BasePipeline(store, Path(plan["run_directory"]))
+                elif not checkpoint:
+                    write_json(artifacts / "memory_initial.json", {"status": "disabled", "records": []})
+                if not checkpoint:
+                    checkpoint = commit_checkpoint(plan, phase, [])
+                adapter = MetaWeftAdapter(plan, phase, manifest, pipeline, store)
                 run_dataset(adapter=adapter, dataset_name=phase["dataset"], experiment_name=phase["experiment_name"],
                             logger_factory=lambda context: task_lm_logger(output.parent, phase["experiment_name"],
                                                                          "metaweft", context.task_id),
@@ -241,9 +256,18 @@ def main():
                 "degraded_task_ids": manifest["degraded_task_ids"],
                 "scenario_metric_scope": "selected tasks only" if phase["partial"] else "complete dataset",
             })
+            commit_checkpoint(plan, phase, manifest["completed_task_ids"],
+                              previous=read_json(output / "checkpoint.json"), finalized=True)
         manifest["status"] = "completed"
     except BaseException as error:
-        manifest.update(status="failed", error_type=type(error).__name__)
+        failure = {"error_type": type(error).__name__, "error": str(error),
+                   "task_id": manifest.get("current_task_id")}
+        if isinstance(error, LLMUnavailableError):
+            failure.update(kind="provider_unavailable", phase=error.phase, operation=error.operation,
+                           logical_call_id=error.logical_call_id, attempts=error.attempts)
+        failure = redact_secrets(failure)
+        manifest.update(status="failed", error_type=type(error).__name__, failure=failure)
+        write_json(output / "failure.json", failure)
         raise
     finally:
         manifest["finished_at"] = now()

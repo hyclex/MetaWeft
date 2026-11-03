@@ -59,28 +59,32 @@ distinct from the model seed. Embeddings use `text-embedding-3-large` at 1024
 dimensions. Retrieval and candidate-neighbor search each return at most five
 records. Reflection returns at most three candidates.
 
-Each logical provider call permits at most three physical transient attempts,
-with 1- and 5-second waits. SDK-internal retries are disabled. Chat attempts time
+Each logical provider call defaults to an initial attempt plus five retries,
+with a 60-second delay. `service/llm/retry.json` supplies configurable defaults;
+the resolved run settings preserve the actual budget. SDK-internal retries are
+disabled. Chat attempts time
 out after 120 seconds and embedding attempts after 30 seconds. Invalid structured
 output receives no additional model repair call. These limits are not inherited
 from ReMe's much larger retry loop. Record the settings and every physical attempt
 so comparisons include retry and memory costs.
 
-An exhausted retrieval or adaptation failure is recorded and execution proceeds
-without memory guidance. Reflection or consolidation failure preserves confirmed
-earlier writes, records the failure, and skips the remaining update work for that
-task. Normal empty-memory skips and deliberate skip/defer decisions are distinct
-from failed stages. A finished stream can therefore be `completed` with degraded
-tasks; degradation is not silently converted into a successful memory operation.
+Provider-call exceptions, empty chat responses, and invalid embedding responses
+are retried. Exhaustion propagates `LLMUnavailableError` from every stage and stops
+the stream without committing the unfinished task. Recovery restores memory from
+the preceding completed task, excluding partial updates from the unfinished task.
+Other retrieval/adaptation failures retain the existing visible fallback to no
+guidance. Non-provider reflection/consolidation failures retain confirmed writes
+and skip remaining updates; invalid nonempty JSON receives no repair call. Normal
+empty-memory skips and deliberate skip/defer decisions remain distinct from failed
+stages. A completed stream may still contain explicitly degraded tasks.
 
 Missing canonical logs, failed provenance/artifact writes, invalid benchmark
 execution or evaluation, and interrupted runs are infrastructure failures. Do not
 hide them behind memory fallback. Store operations reconcile uncertain writes
 before treating them as confirmed. Initial memory must be verified empty or the
-run fails. A later unavailable memory snapshot is recorded as an evidence gap;
-task snapshot failures also mark the task degraded. The stream may continue, but
-its manifest and report must expose this limitation rather than claim verified
-memory state.
+run fails. Task-boundary snapshots are required for checkpoint commits; a failure
+stops the stream while retaining its last verified checkpoint. Optional final
+snapshot failures remain visible evidence gaps and never imply empty memory.
 
 ## Feedback, lifetime, and provenance
 
@@ -93,8 +97,17 @@ they are not permission to open arbitrary files.
 
 Independent invocations and test splits start with empty memory. Tasks within one
 stream run in manifest order and observe completed prior updates. V1 has no
-training phase, warm-start import, resume path, task parallelism, mid-task memory
+training phase, arbitrary warm-start import, task parallelism, mid-task memory
 refresh, automatic eviction, or general design-search controller.
+
+Recovery-format v1 adds completed-task continuation for newly created runs. Each
+attempt has a unique directory and retains its failed parent unchanged. Original
+source, settings, task order and benchmark/runtime identity are verified and
+reused. This reliability extension is based on the current `base`/`direct` v1
+variants; its hypothesis is that provider outages can be tolerated without losing
+committed task progress or altering memory continuity. Offline comparisons use
+the same stream with injected outages and assert restored state, call coverage,
+and task order. They are not performance or model-identity claims.
 
 The executor and initial executor prompt derive from the sibling bundled ReMe
 AppWorld implementation. Memory policy is new: explicit adaptation, failure-aware

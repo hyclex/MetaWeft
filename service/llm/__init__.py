@@ -1,5 +1,5 @@
 """Logged OpenAI-compatible chat and embedding calls."""
 
-from .client import ModelClient
+from .client import LLMUnavailableError, ModelClient
 
-__all__ = ["ModelClient"]
+__all__ = ["LLMUnavailableError", "ModelClient"]

@@ -51,6 +51,14 @@ the relevant working source and resolved configuration and executes workers from
 that snapshot. This framework is not independent of that checkout. Mutable state,
 caches, logs, and outputs belong under `raw_logs/`, never under source directories.
 
+Provider calls default to five retries after the initial attempt, waiting 60
+seconds between attempts. Configure new runs in `service/llm/retry.json`.
+Exhausted provider failures stop the stream at its last completed-task checkpoint.
+Repeat the original launch selection with `--recover` to continue in a new linked
+directory using the saved source, settings and memory. Add `--dry-run` to inspect
+the recovery plan. Only runs created with the new checkpoint format are supported;
+see [recovery usage](experiment/appworld/README.md#recovery).
+
 ## Reference comparison
 
 `base` starts empty for each test split, retrieves up to five memories, adapts them

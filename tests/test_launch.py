@@ -18,6 +18,20 @@ spec.loader.exec_module(launch)
 
 
 class LaunchTests(unittest.TestCase):
+    def test_all_entrypoints_expose_recovery_and_configured_retries(self):
+        for setting in ("base", "direct"):
+            with self.subTest(setting=setting):
+                args = launch.parse_args(setting, ["--dataset", "2h", "--recover"])
+                self.assertEqual(args.recover, "latest")
+                args = launch.parse_args(setting, ["--dataset", "2h", "--recover", "/saved/run"])
+                self.assertEqual(args.recover, "/saved/run")
+                help_text = subprocess.run(["bash", str(ENTRY / "run.sh"), setting, "--help"],
+                                           check=True, capture_output=True, text=True, cwd=ROOT).stdout
+                self.assertIn("--recover", help_text)
+                with patch.object(launch, "retry_defaults", return_value={"max_retries": 2, "retry_delay_seconds": 7}):
+                    plan = launch.make_plan(setting, args)
+                self.assertEqual((plan["settings"]["max_retries"], plan["settings"]["retry_delay_seconds"]), (2, 7))
+
     def test_same_two_tasks_and_unique_run_identity(self):
         selected = []
         for setting in ("base", "direct"):

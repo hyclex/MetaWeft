@@ -15,7 +15,7 @@ bash metaskill-appworld/run/setup_runtime.sh
 bash metaskill-appworld/run/setup_runtime.sh --check
 ```
 
-Runtime setup can download packages, data, and Elasticsearch. Live launch requires
+Runtime setup can download packages, data, and Elasticsearch. Fresh live launch requires
 `OPENAI_API_KEY` and `OPENAI_BASE_URL`, inherited from the environment or loaded
 from `raw_logs/.runtime/providers/metaskill-appworld-origin.env`. Inherited values
 take precedence. Use `--env-file` for another provider file; secrets are not copied
@@ -36,6 +36,7 @@ AppWorld Python interpreter, selected automatically by the launcher.
 | `--limit N` | First N tasks per selected split; records partial coverage. |
 | `--task-id ID` | One task from a single selected split; mutually exclusive with `--limit`. |
 | `--dry-run` | Print the exact plan without writes, setup, or provider calls. |
+| `--recover [latest\|RUN_DIRECTORY]` | Recover a compatible failed new-format run in a new linked directory; bare `--recover` selects `latest`. |
 | `--env-file PATH` | Provider dotenv file; inherited environment wins. |
 | `--data-root PATH` | Existing downloaded AppWorld data directory accepted by the shared runtime rules. |
 | `--note TEXT` | Recorded annotation; it does not change the variant identity. |
@@ -44,14 +45,52 @@ Both settings use 40 executor interactions, one primary trial, `qwen3.8-flash` a
 temperature `0.9`, model seed `0`, and thinking disabled. AppWorld's environment
 random seed is `100`. Base memory calls use
 temperature `0`; embeddings use `text-embedding-3-large`, 1024 dimensions. Provider
-calls have at most three physical transient attempts; invalid model JSON is not
+calls default to one initial attempt plus five retries with a 60-second delay;
+edit `service/llm/retry.json` to configure new runs. Invalid nonempty model JSON is not
 repaired by an extra LLM call. Refer to [design decisions](../../DESIGNS.md) for
 the stage-specific behavior and failure policy.
 
-V1 supports sequential fresh test streams. It does not provide training,
-warm-start memory, resume, repetitions within an invocation, or parallel task
-execution. Each invocation gets a unique output directory; prior runs are not
-overwritten.
+The launchers support sequential fresh streams and recovery from committed task
+boundaries. They do not provide training, arbitrary warm-start memory, within-task
+resume, repetitions within an invocation, or parallel task execution. Every
+invocation gets a unique output directory; prior runs are not overwritten.
+
+## Recovery
+
+Repeat the original setting, dataset, split, and `--limit`/`--task-id` selection
+with `--recover`. `--recover latest` selects the most recently failed compatible
+run; an explicit directory selects that parent. `--dry-run` reports the saved
+configuration, lineage, reused task IDs, and remaining IDs without writes or
+provider calls. Completed or active recovery lineages and pre-checkpoint runs
+are rejected. The `base.py`, `direct.py`, and `run.sh` entrypoints share this API.
+The [experiment command catalog](../README.md#recovery) lists `nohup` recovery
+commands for both settings, all three dataset sizes, and every test split, using
+either the latest compatible failure or a specific parent directory. Its
+[fresh-run examples](../README.md#fresh-runs) cover the same combinations.
+
+Recovery uses the original captured source, prompts, model settings, retry policy,
+task order, immutable benchmark inputs, and runtime. Edits to the current checkout
+do not change the resumed experiment. Conflicting selection, data, provider URL,
+or runtime options are rejected. Credentials may be rotated; API keys are still
+loaded from the environment/provider file and are never copied to manifests.
+`--note` may annotate the new attempt without changing its experimental identity.
+
+Each split commits `checkpoint.json` after evaluation, post-task updates, native
+output validation, and a verified memory export. A task with an unsuccessful
+benchmark score can still be committed. Exhausted provider calls in any stage
+stop the stream; a failed required checkpoint export also stops it. Recovery
+restores a fresh memory index from the last committed snapshot, skips completed
+tasks and phases, and restarts the unfinished task. Partial updates made by that
+unfinished task remain in failure evidence and are excluded from restored memory.
+Independent splits retain separate memory initialization.
+
+The new run records its parent, origin, generation, and reused tasks. Completed
+outputs and evidence are copied; incomplete task attempts are archived under
+`recovery_history/`. Imports point into the new copy of the saved source. Caches,
+temporary files, AppWorld databases for restarted tasks, and Elasticsearch state
+are isolated. Final aggregate evaluation still covers the original full selection.
+Accounting reports cumulative distinct physical calls plus `current_attempt` and
+`inherited` subtotals, including failed attempts and unknown usage.
 
 ## Outputs and interpretation
 
@@ -88,13 +127,14 @@ and `degraded_reasons` and follow their task artifacts. Missing usage is unknown
 unverified provider prices leave dollar cost unknown. Subset SGC covers only
 selected variants and must not be presented as full-split SGC.
 
-Initial memory must be verified empty. Later snapshot failures are recorded as
-unavailable evidence, not empty or verified memory. Per-task failures mark that
-task degraded; phase-level `evidence_gaps` retain a failed final snapshot even if
-all tasks completed. The collector displays those gap counts.
+Fresh initial memory must be verified empty. Unavailable snapshots are recorded
+as missing evidence, never as empty memory. A failed per-task checkpoint snapshot
+prevents that task from being committed and stops the stream. An optional final
+snapshot failure remains in phase `evidence_gaps`; the already verified task
+checkpoint remains available. The collector displays gaps and recovery lineage.
 
 Run `bash tool/collect_appworld.sh` to regenerate the separate MetaWeft table in
-`res/raw_collect.md`. The table links to phase manifests and official aggregate
+`res/appworld_2h.md`, `res/appworrld_8h.md`, and `res/appworkd_full.md`. The tables link to phase manifests and official aggregate
 evaluation files. Consult [integration decisions](DESIGNS.md) before changing
 these contracts.
 

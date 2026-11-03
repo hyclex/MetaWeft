@@ -6,6 +6,8 @@ import math
 from pathlib import Path
 import uuid
 
+from MetaWeft.service.llm import LLMUnavailableError
+
 
 def memory_index_body(dimensions=1024):
     return {
@@ -62,6 +64,8 @@ def _call(function, *args, **kwargs):
     """Only provider/storage calls enter this recoverable-error boundary."""
     try:
         return function(*args, **kwargs)
+    except LLMUnavailableError:
+        raise
     except Exception as error:
         if any(base.__name__ == "LLMLoggingError" for base in type(error).__mro__):
             raise

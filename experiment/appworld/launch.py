@@ -1,4 +1,4 @@
-"""Fresh isolated launches, reusing current AppWorld provenance helpers."""
+"""Isolated fresh and recovered launches using captured AppWorld sources."""
 
 import argparse
 from datetime import datetime, timezone
@@ -18,8 +18,14 @@ FRAMEWORK = ENTRY.parents[1]
 WORKSPACE = FRAMEWORK.parent
 REPO = WORKSPACE / "metaskill-appworld"
 sys.path.insert(0, str(REPO / "run"))
+sys.path.insert(0, str(WORKSPACE))
 from runtime_paths import PROVIDER_FILE, isolated_environment, load_runtime
-from reproduce import DATASETS, find_data, sha256, snapshot_source, task_ids, write_json
+from reproduce import DATASETS, find_data, sha256, snapshot_source, task_ids
+from MetaWeft.experiment.recovery import (
+    RECOVERY_VERSION, add_recovery_argument, clone_run, recovery_lock, recovery_plan,
+    seal_run, select_parent, selection, write_json,
+)
+from MetaWeft.service.llm.config import retry_defaults
 
 
 SETTINGS = {
@@ -28,8 +34,7 @@ SETTINGS = {
     "execution_temperature": 0.9, "memory_temperature": 0.0,
     "seed": 0, "appworld_seed": 100, "enable_thinking": False, "num_trials": 1,
     "retrieval_k": 5, "retrieval_candidates": 10, "reflection_candidates": 3,
-    "provider_attempts": 3, "chat_timeout": 120, "embedding_timeout": 30,
-    "retry_waits": [1, 5], "structured_output_repairs": 0,
+    "chat_timeout": 120, "embedding_timeout": 30, "structured_output_repairs": 0,
 }
 
 
@@ -44,17 +49,23 @@ def parse_args(setting, argv=None):
     parser.add_argument("--data-root", type=Path)
     parser.add_argument("--note", default="")
     parser.add_argument("--dry-run", action="store_true")
+    add_recovery_argument(parser)
     args = parser.parse_args(argv)
     if args.task_id and args.split == "test-all":
         parser.error("--task-id requires a single test split")
     return args
 
 
-def make_plan(setting, args):
+def run_location(setting, args):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tag = f"{stamp}_{args.split}_{uuid.uuid4().hex[:8]}"
     setting_id = f"metaweft-{setting}-{args.dataset}"
     root = WORKSPACE / "raw_logs" / setting_id / "experiment/output" / tag
+    return root, tag, setting_id
+
+
+def make_plan(setting, args):
+    root, tag, setting_id = run_location(setting, args)
     phases = []
     splits = ("test-normal", "test-challenge") if args.split == "test-all" else (args.split,)
     for split in splits:
@@ -76,7 +87,9 @@ def make_plan(setting, args):
         "note": args.note, "status": "planned", "phases": phases,
         "partial": any(p["partial"] for p in phases), "repetitions": 1,
         "task_order": "manifest order", "memory_reset": "empty independently for each split",
-        "settings": SETTINGS, "command": [sys.executable, *sys.argv],
+        "settings": {**SETTINGS, **retry_defaults()}, "command": [sys.executable, *sys.argv],
+        "recovery_version": RECOVERY_VERSION, "recovery_ready": False,
+        "selection": selection(setting, args), "created_at": datetime.now(timezone.utc).isoformat(),
         "degraded_task_ids": [], "degraded_reasons": {}, "evidence_gaps": [],
     }
 
@@ -91,7 +104,7 @@ def prepare(plan, args, runtime):
     data = find_data(args, runtime)
     if (data / "version.txt").read_bytes() != (REPO / "data/version.txt").read_bytes():
         raise ValueError("AppWorld data version differs from the current checkout")
-    project, imports = snapshot_source(root, "metaweft", runtime)
+    project, _ = snapshot_source(root, "metaweft", runtime)
     # Preserve the framework's working source; workers import this copy only.
     framework = root / "source/MetaWeft"
     shutil.copytree(FRAMEWORK, framework, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"))
@@ -132,15 +145,75 @@ def prepare(plan, args, runtime):
         plan["provider"]["env_file_sha256"] = sha256(args.env_file)
     if plan["setting"] == "base":
         plan.update(es_binary=runtime["es_binary"], es_url=None)
-    os.environ.update(APPWORLD_ROOT=str(root), APPWORLD_PROJECT_PATH=str(project),
-                      APPWORLD_LM_LOGGER_MODULE_PATH=str(project / "experiments/code/common/lm_logger.py"),
-                      PYTHONPATH=os.pathsep.join([str(root / "source"), str(project / "src"),
-                                                str(imports), str(project / "run")]))
+    worker_environment(plan)
     write_json(root / "runtime.json", runtime)
     requirements = subprocess.run([sys.executable, "-m", "pip", "freeze"], check=True,
                                  capture_output=True, text=True, cwd=root)
     (root / "appworld-requirements.txt").write_text(requirements.stdout)
+    seal_run(plan)
     write_json(root / "resolved_settings.json", plan)
+
+
+def worker_environment(plan):
+    root = Path(plan["run_directory"])
+    project = root / "source/project"
+    os.environ.update(APPWORLD_ROOT=str(root), APPWORLD_PROJECT_PATH=str(project),
+                      APPWORLD_LM_LOGGER_MODULE_PATH=str(project / "experiments/code/common/lm_logger.py"),
+                      PYTHONPATH=os.pathsep.join([str(root / "source"), str(project / "src"),
+                                                str(root / "source/imports"), str(project / "run")]))
+
+
+def check_recovery_options(parent, args):
+    if args.data_root and args.data_root.resolve() != Path(parent["data_source"]).resolve():
+        raise ValueError("--data-root conflicts with the saved run")
+    runtime = parent["runtime"]
+    for variable, key in {"APPWORLD_RUNTIME_PROFILE": "profile_directory", "APPWORLD_PYTHON": "appworld_python",
+                          "APPWORLD_INSTALLED_SOURCE": "installed_source", "REME_ES_BINARY": "es_binary"}.items():
+        if variable == "REME_ES_BINARY" and parent["setting"] == "direct":
+            continue
+        if os.environ.get(variable) and os.path.abspath(os.environ[variable]) != runtime[key]:
+            raise ValueError(f"{variable} conflicts with the saved runtime")
+    url = os.environ.get("OPENAI_BASE_URL")
+    if not url and args.env_file.is_file():
+        result = subprocess.run(
+            [runtime["appworld_python"], "-B", "-c",
+             "from dotenv import dotenv_values; import sys; print(dotenv_values(sys.argv[1]).get('OPENAI_BASE_URL') or '')",
+             str(args.env_file)], check=True, capture_output=True, text=True,
+        )
+        url = result.stdout.strip()
+    if url and url.rstrip("/") != parent["provider"]["chat_base_url"].rstrip("/"):
+        raise ValueError("Provider endpoint conflicts with the saved run; restore the original endpoint")
+
+
+def inspect_recovery(setting, args):
+    root, tag, _ = run_location(setting, args)
+    parent_root, parent, checkpoints = select_parent(root.parent, selection(setting, args), args.recover)
+    check_recovery_options(parent, args)
+    plan = recovery_plan(parent, parent_root, checkpoints, root=root, tag=tag,
+                         command=[sys.executable, *sys.argv])
+    if args.note:
+        plan["note"] = args.note
+    return plan, parent_root, checkpoints
+
+
+def prepare_recovery(plan, parent_root, checkpoints, args):
+    from dotenv import load_dotenv
+    if args.env_file.is_file():
+        load_dotenv(args.env_file, override=False)
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise ValueError("Provide OPENAI_API_KEY or --env-file for recovery")
+    # Check the installed environment as well as the preserved lock records.
+    requirements = subprocess.run([sys.executable, "-m", "pip", "freeze"], check=True,
+                                 capture_output=True, text=True)
+    if sorted(requirements.stdout.splitlines()) != sorted((parent_root / "appworld-requirements.txt").read_text().splitlines()):
+        raise ValueError("Installed dependencies differ from the saved run")
+    clone_run(parent_root, plan, checkpoints)
+    plan["provider"]["env_file"] = str(args.env_file.resolve())
+    plan["provider"].pop("env_file_sha256", None)
+    if args.env_file.is_file():
+        plan["provider"]["env_file_sha256"] = sha256(args.env_file)
+    worker_environment(plan)
+    write_json(Path(plan["run_directory"]) / "resolved_settings.json", plan)
 
 
 def run_phase(plan, index):
@@ -165,34 +238,51 @@ def run_phase(plan, index):
                 except subprocess.TimeoutExpired:
                     child.kill()
                     child.wait()
+            child.stdout.close()
 
 
 def main(setting, argv=None):
     args = parse_args(setting, argv)
-    plan = make_plan(setting, args)
     if args.dry_run:
+        plan = inspect_recovery(setting, args)[0] if args.recover else make_plan(setting, args)
         print(json.dumps(plan, indent=2))
         return
-    assets = ["appworld_python", "installed_source", "data_root"]
-    if setting == "base":
-        assets.append("es_binary")
-    runtime = load_runtime(required_assets=assets)
-    if os.path.abspath(sys.executable) != runtime["appworld_python"]:
-        os.execv(runtime["appworld_python"], [runtime["appworld_python"], "-B", *sys.argv])
+    if args.recover:
+        with recovery_lock(run_location(setting, args)[0].parent):
+            plan, parent_root, checkpoints = inspect_recovery(setting, args)
+            runtime = plan["runtime"]
+            if os.path.abspath(sys.executable) != runtime["appworld_python"]:
+                os.execv(runtime["appworld_python"], [runtime["appworld_python"], "-B", *sys.argv])
+            root = Path(plan["run_directory"])
+            root.mkdir(parents=True, exist_ok=False)
+            write_json(root / "run_manifest.json", plan)
+    else:
+        plan = make_plan(setting, args)
+        assets = ["appworld_python", "installed_source", "data_root"]
+        if setting == "base":
+            assets.append("es_binary")
+        runtime = load_runtime(required_assets=assets)
+        if os.path.abspath(sys.executable) != runtime["appworld_python"]:
+            os.execv(runtime["appworld_python"], [runtime["appworld_python"], "-B", *sys.argv])
+        Path(plan["run_directory"]).mkdir(parents=True, exist_ok=False)
     root = Path(plan["run_directory"])
-    root.mkdir(parents=True, exist_ok=False)
-    environment = isolated_environment(root)
-    os.environ.clear()
-    os.environ.update(environment)
-    plan["writable_paths"] = {k: v for k, v in environment.items()
-                              if k.endswith("CACHE_DIR") or k in ("APPWORLD_CACHE", "TMPDIR", "XDG_CACHE_HOME")}
     write_json(root / "run_manifest.json", plan)
     print(f"Run: {root}", flush=True)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
-        prepare(plan, args, runtime)
+        environment = isolated_environment(root)
+        os.environ.clear()
+        os.environ.update(environment)
+        plan["writable_paths"] = {k: v for k, v in environment.items()
+                                  if k.endswith("CACHE_DIR") or k in ("APPWORLD_CACHE", "TMPDIR", "XDG_CACHE_HOME")}
+        if args.recover:
+            prepare_recovery(plan, parent_root, checkpoints, args)
+        else:
+            prepare(plan, args, runtime)
         plan["status"] = "running"
         for index, phase in enumerate(plan["phases"]):
+            if phase["status"] == "completed":
+                continue
             phase["status"] = "running"
             write_json(root / "run_manifest.json", plan)
             try:
@@ -201,12 +291,10 @@ def main(setting, argv=None):
                 saved = Path(phase["output_directory"]) / "run_manifest.json"
                 if saved.is_file():
                     result = json.loads(saved.read_text())
-                    for key in ("status", "completed_task_ids", "degraded_task_ids", "degraded_reasons", "evidence_gaps", "started_at", "finished_at"):
+                    for key in ("status", "completed_task_ids", "degraded_task_ids", "degraded_reasons", "evidence_gaps",
+                                "started_at", "finished_at", "failure", "current_task_id"):
                         if key in result:
                             phase[key] = result[key]
-                    plan["degraded_task_ids"].extend(result.get("degraded_task_ids", []))
-                    plan["degraded_reasons"].update(result.get("degraded_reasons", {}))
-                    plan["evidence_gaps"].extend(result.get("evidence_gaps", []))
                 else:
                     phase["status"] = "failed"
                 write_json(root / "run_manifest.json", plan)
@@ -217,4 +305,9 @@ def main(setting, argv=None):
             traceback.print_exc(file=log)
         raise
     finally:
+        plan["finished_at"] = datetime.now(timezone.utc).isoformat()
+        plan["degraded_task_ids"] = [task for phase in plan["phases"] for task in phase.get("degraded_task_ids", [])]
+        plan["degraded_reasons"] = {task: reasons for phase in plan["phases"]
+                                    for task, reasons in phase.get("degraded_reasons", {}).items()}
+        plan["evidence_gaps"] = [gap for phase in plan["phases"] for gap in phase.get("evidence_gaps", [])]
         write_json(root / "run_manifest.json", plan)

@@ -1,0 +1,4 @@
+{
+  "max_retries": 5,
+  "retry_delay_seconds": 60
+}

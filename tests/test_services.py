@@ -9,7 +9,7 @@ import requests
 from openai import BadRequestError, RateLimitError
 
 from MetaWeft.service.elasticsearch import ElasticsearchStore, StoreWriteError
-from MetaWeft.service.llm import ModelClient
+from MetaWeft.service.llm import LLMUnavailableError, ModelClient
 
 
 def provider_error(kind, status):
@@ -43,7 +43,8 @@ class ModelTests(unittest.TestCase):
         )
 
     def test_retry_attempts_share_identity_and_preserve_usage(self):
-        result = SimpleNamespace(usage={"total_tokens": 17})
+        result = SimpleNamespace(usage={"total_tokens": 17},
+                                 choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
         self.provider.chat.completions.create.side_effect = [
             provider_error(RateLimitError, 429), provider_error(RateLimitError, 429), result,
         ]
@@ -52,22 +53,27 @@ class ModelTests(unittest.TestCase):
         ), result)
         self.assertEqual([call["attempt"] for call in self.recorder.calls], [1, 2, 3])
         self.assertEqual(len({call["logical_call_id"] for call in self.recorder.calls}), 1)
-        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [1, 5])
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [60, 60])
         self.assertEqual(self.recorder.calls[-1]["response"].usage, {"total_tokens": 17})
         self.assertEqual(self.provider.chat.completions.create.call_args.kwargs["timeout"], 120)
 
-    def test_exhausted_transient_failure_has_only_three_attempts(self):
+    def test_exhaustion_has_six_attempts_and_preserves_cause(self):
         self.provider.chat.completions.create.side_effect = provider_error(RateLimitError, 429)
-        with self.assertRaises(RateLimitError):
+        with self.assertRaises(LLMUnavailableError) as caught:
             self.client.chat([], phase="execute", component="model")
-        self.assertEqual(self.provider.chat.completions.create.call_count, 3)
-        self.assertEqual(len(self.recorder.calls), 3)
+        self.assertEqual(self.provider.chat.completions.create.call_count, 6)
+        self.assertEqual(len(self.recorder.calls), 6)
+        self.assertEqual(self.sleep.call_count, 5)
+        self.assertIsInstance(caught.exception.__cause__, RateLimitError)
+        self.assertEqual(caught.exception.attempts, 6)
+        self.assertEqual(caught.exception.phase, "execute")
 
-    def test_nontransient_and_logger_errors_are_not_retried(self):
+    def test_http_errors_retry_but_recorder_errors_do_not(self):
         self.provider.chat.completions.create.side_effect = provider_error(BadRequestError, 400)
-        with self.assertRaises(BadRequestError):
+        with self.assertRaises(LLMUnavailableError):
             self.client.chat([], phase="execute", component="model")
-        self.assertEqual(self.provider.chat.completions.create.call_count, 1)
+        self.assertEqual(self.provider.chat.completions.create.call_count, 6)
+        self.sleep.reset_mock()
         self.client.recorder = Mock(side_effect=RuntimeError("canonical log unavailable"))
         with self.assertRaisesRegex(RuntimeError, "canonical log unavailable"):
             self.client.chat([], phase="execute", component="model")
@@ -85,15 +91,67 @@ class ModelTests(unittest.TestCase):
         self.assertIs(self.recorder.calls[0]["response"], result)
         self.assertEqual(self.provider.embeddings.create.call_args.kwargs["timeout"], 30)
 
-    def test_embedding_validation_is_after_logging_and_is_not_retried(self):
+    def test_embedding_validation_is_after_logging_and_is_retried(self):
         self.provider.embeddings.create.return_value = SimpleNamespace(
             data=[SimpleNamespace(index=0, embedding=[1.0])], usage={"total_tokens": 2},
         )
-        with self.assertRaisesRegex(ValueError, "dimensions"):
+        with self.assertRaisesRegex(LLMUnavailableError, "dimensions"):
             self.client.embed(["a"], phase="retrieve", component="embedding")
-        self.assertEqual(len(self.recorder.calls), 1)
+        self.assertEqual(len(self.recorder.calls), 6)
         self.assertIn("response", self.recorder.calls[0])
-        self.assertEqual(self.provider.embeddings.create.call_count, 1)
+        self.assertEqual(self.provider.embeddings.create.call_count, 6)
+
+    def test_empty_and_malformed_chat_responses_retry(self):
+        success = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="not JSON"))])
+        bad = [None, SimpleNamespace(choices=[]), SimpleNamespace(choices=[None])]
+        bad += [SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+                for text in (None, "", " \n", 12)]
+        for response in bad:
+            with self.subTest(response=response):
+                self.provider.chat.completions.create.side_effect = [response, success]
+                self.assertIs(self.client.chat([], phase="execution", component="model"), success)
+                self.assertIs(self.recorder.calls[-2]["response"], response)
+
+    def test_connection_and_decoding_exceptions_retry(self):
+        for error in (TimeoutError("timeout"), ConnectionError("unreachable"), ValueError("bad JSON")):
+            with self.subTest(error=error):
+                self.provider.embeddings.create.side_effect = [error, SimpleNamespace(
+                    data=[SimpleNamespace(index=0, embedding=[0.1, 0.2])])]
+                self.assertEqual(self.client.embed(["a"], phase="retrieval", component="model"), [[0.1, 0.2]])
+
+    def test_zero_budget_and_custom_delay(self):
+        self.client.max_retries = 0
+        self.provider.chat.completions.create.return_value = None
+        with self.assertRaises(LLMUnavailableError):
+            self.client.chat([], phase="execution", component="model")
+        self.sleep.assert_not_called()
+        self.provider.chat.completions.create.reset_mock()
+        self.client.max_retries, self.client.retry_delay_seconds = 2, 0.25
+        with self.assertRaises(LLMUnavailableError):
+            self.client.chat([], phase="execution", component="model")
+        self.assertEqual(self.provider.chat.completions.create.call_count, 3)
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [0.25, 0.25])
+
+    def test_invalid_retry_configuration_and_cancellation_do_not_call_again(self):
+        for retries, delay in ((-1, 0), (True, 0), (1.5, 0), (1, -1), (1, float("inf")), (1, True)):
+            with self.subTest(retries=retries, delay=delay), self.assertRaises(ValueError):
+                ModelClient(client=self.provider, chat_model="test", max_retries=retries, retry_delay_seconds=delay)
+        for config in ({"dimensions": 0}, {"chat_timeout": -1}, {"embedding_timeout": float("nan")},
+                       {"embedding_model": ""}):
+            with self.subTest(config=config), self.assertRaises(ValueError):
+                ModelClient(client=self.provider, chat_model="test", **config)
+        self.provider.chat.completions.create.side_effect = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            self.client.chat([], phase="execution", component="model")
+        self.assertEqual(self.provider.chat.completions.create.call_count, 1)
+        self.sleep.assert_not_called()
+
+    def test_recorder_api_error_is_not_confused_with_provider_error(self):
+        self.client.recorder = Mock(side_effect=provider_error(RateLimitError, 429))
+        with self.assertRaises(RateLimitError):
+            self.client.chat([], phase="execution", component="model")
+        self.provider.chat.completions.create.assert_not_called()
+        self.sleep.assert_not_called()
 
     def test_empty_embedding_batch_has_no_provider_call(self):
         self.assertEqual(self.client.embed([], phase="retrieve", component="embedding"), [])

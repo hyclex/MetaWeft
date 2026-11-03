@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from MetaWeft.src.base import BasePipeline, memory_index_body
+from MetaWeft.service.llm import LLMUnavailableError
 
 
 TASK = {"task_id": "example_1", "instruction": "Find all pages of results",
@@ -242,6 +243,21 @@ class BaseTests(unittest.TestCase):
         with patch("MetaWeft.src.base.pipeline._write", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 self.pipeline.prepare_context(TASK, llm=FakeLLM(), artifacts=self.artifacts)
+
+    def test_provider_exhaustion_escapes_every_memory_stage(self):
+        self.existing()
+        for phase in ("retrieval", "adaptation", "reflection", "consolidation"):
+            error = LLMUnavailableError(operation="chat", phase=phase, logical_call_id="call", attempts=6,
+                                        cause=TimeoutError("provider unavailable"))
+            llm = FakeLLM([{"candidates": [CANDIDATE]}, error] if phase == "consolidation" else [error])
+            with self.subTest(phase=phase), self.assertRaises(LLMUnavailableError):
+                if phase == "retrieval":
+                    with patch.object(llm, "embed", side_effect=error):
+                        self.pipeline.prepare_context(TASK, llm=llm, artifacts=self.artifacts)
+                elif phase == "adaptation":
+                    self.pipeline.prepare_context(TASK, llm=llm, artifacts=self.artifacts)
+                else:
+                    self.pipeline.post_task(EVIDENCE, llm=llm, artifacts=self.artifacts)
 
     def test_runs_have_separate_state(self):
         self.existing()

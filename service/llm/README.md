@@ -23,8 +23,18 @@ client.close()
   Empty input makes no call. Default timeout is 30 seconds. Response indices,
   dimensions, and finite numeric values are validated; inputs/vectors are never
   silently truncated or padded.
-- Both operations try transient provider failures at most three times, waiting
-  one then five seconds. SDK retries are disabled. Other failures propagate.
+- Both operations use `retry.json`: `max_retries=5` and
+  `retry_delay_seconds=60` by default (one initial call plus five retries).
+  `ModelClient(..., max_retries=..., retry_delay_seconds=...)` overrides these
+  defaults; launchers resolve and preserve them once per run. Zero retries and
+  zero delay are supported. SDK retries remain disabled.
+- Exceptions from provider calls, missing/empty chat text, and malformed embedding
+  responses are retried. Every physical response is recorded before validation,
+  including usage reported for an empty response. Nonempty text is returned
+  without JSON/schema repair. Logging failures and cancellation are not retried.
+- Exhaustion raises `LLMUnavailableError` with `operation`, `phase`,
+  `logical_call_id`, `attempts`, and the last error as `__cause__`. Experiment
+  pipelines must propagate it so the worker can stop at its saved task boundary.
 - `recorder(operation, request, invoke, *, phase, component, logical_call_id,
   attempt, step)` must call `invoke()` once, preserve its response/error, and return
   the response. Each physical attempt invokes the recorder separately. Operation
@@ -34,3 +44,8 @@ client.close()
   itself have SDK retries disabled. `close()` closes that client too.
 
 See [DESIGNS.md](DESIGNS.md) for boundaries and rationale.
+
+Observed MetaWeft failure cases include embedding HTTP 429 rate limits and a
+chat response with empty text but 21,192 reported input tokens. The service uses
+the broader provider-call boundary above rather than an allowlist of status codes.
+It does not detect a provider silently substituting another model.
