@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "setting_4",
+  "description": "Independent general and applicability branches with flat RRF.",
+  "query_generation": {"branches": [
+    {"id": "general", "method": "llm", "prompt": "general_v1", "generated_count": 2},
+    {"id": "applicability", "method": "llm", "prompt": "applicability_v1", "generated_count": 2}
+  ]},
+  "search": {"num_candidates": 10, "routes": [
+    {"branch": "general", "representation": "combined"},
+    {"branch": "applicability", "representation": "applicability"}
+  ]},
+  "fusion": {"method": "rrf", "rank_constant": 60}
+}

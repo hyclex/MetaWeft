@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "setting_2",
+  "description": "Applicability query expansion against when_to_use.",
+  "query_generation": {"branches": [{"id": "applicability", "method": "llm", "prompt": "applicability_v1", "generated_count": 2}]},
+  "search": {"num_candidates": 10, "routes": [{"branch": "applicability", "representation": "applicability"}]},
+  "fusion": {"method": "rrf", "rank_constant": 60}
+}

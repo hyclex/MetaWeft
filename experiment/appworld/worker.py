@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import sys
+import uuid
 
 from appworld.apps.model_lib import CachedDBHandler
 from appworld_experiments.code.common.appworld_runner import run_dataset
@@ -41,12 +42,18 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def physical_recorder(logger):
+def physical_recorder(logger, call_refs=None):
     def record(operation, request, invoke, *, phase, component, logical_call_id, attempt, step):
+        physical_call_id = uuid.uuid4().hex
+        if call_refs is not None:
+            call_refs.setdefault(component, []).append({
+                "logical_call_id": logical_call_id, "physical_call_id": physical_call_id, "attempt": attempt,
+            })
         return logger.invoke(
             provider_call=invoke, request=request,
             context=LLMCallContext(phase=phase, component=component, logical_call_id=logical_call_id,
-                                   attempt=attempt, step=step, episode_kind="primary"),
+                                   physical_call_id=physical_call_id, attempt=attempt, step=step,
+                                   episode_kind="primary"),
             serializer=SafeEmbeddingSerializer() if operation in ("embed", "embedding", "embeddings") else OpenAISerializer(),
         )
     return record
@@ -74,6 +81,30 @@ class MetaWeftAdapter:
         self.prompts = Path(plan["source_framework"]) / "src/base/prompts/v1"
         self.checkpoint = read_json(self.output / "checkpoint.json")
 
+    def retrieval_trace_context(self):
+        from MetaWeft.src.memory_retrieval import prompt_manifest
+        root = Path(self.plan["run_directory"])
+        bank = self.output / "baseline_artifacts/metaweft"
+        settings = self.plan["settings"]
+        memory_file = self.checkpoint["memory_file"]
+        return {
+            "bank": {
+                "index": self.store.index,
+                "mapping": str((bank / "memory_mapping.json").relative_to(root)),
+                "memory_checkpoint": str((self.output / memory_file).relative_to(root)),
+                "memory_sha256": self.checkpoint["files"][memory_file],
+                "checkpoint": str((self.output / "checkpoint.json").relative_to(root)),
+                "representations": {"combined": {
+                    "field": "embedding", "input": 'when_to_use + "\\n\\n" + content',
+                }},
+                "embedding_spec": {"provider_base_url": self.plan["provider"]["chat_base_url"],
+                                   "model": settings["embedding_model"],
+                                   "dimensions": settings["embedding_dimensions"]},
+            },
+            "model_settings": {**settings, "provider_base_url": self.plan["provider"]["chat_base_url"]},
+            "prompts": prompt_manifest(self.pipeline.retrieval_meta),
+        }
+
     def run_task(self, context, services):
         from loguru import logger
         artifacts = context.artifacts_dir
@@ -88,6 +119,7 @@ class MetaWeftAdapter:
             "app_descriptions": dict(context.task.app_descriptions),
         }
         write_json(artifacts / "task_spec.json", spec)
+        call_refs = {}
         model = ModelClient(api_key=os.environ["OPENAI_API_KEY"], base_url=self.plan["provider"]["chat_base_url"],
                             chat_model=self.plan["settings"]["chat_model"],
                             embedding_model=self.plan["settings"]["embedding_model"],
@@ -96,14 +128,16 @@ class MetaWeftAdapter:
                             retry_delay_seconds=self.plan["settings"]["retry_delay_seconds"],
                             chat_timeout=self.plan["settings"]["chat_timeout"],
                             embedding_timeout=self.plan["settings"]["embedding_timeout"],
-                            recorder=physical_recorder(services.llm))
+                            recorder=physical_recorder(services.llm, call_refs))
         stages = {}
         degraded = []
         sink = None
         try:
             guidance = ""
             if self.pipeline:
-                prepared = self.pipeline.prepare_context(spec, llm=model, artifacts=artifacts)
+                prepared = self.pipeline.prepare_context(spec, llm=model, artifacts=artifacts,
+                                                         trace_context=self.retrieval_trace_context(),
+                                                         call_refs=call_refs)
                 guidance = prepared.guidance
                 stages["context"] = prepared.to_dict()
                 if prepared.degraded:
@@ -225,7 +259,9 @@ def main():
                         initial = snapshot_memory(store, artifacts / "memory_initial.json")
                         if initial["status"] != "verified" or initial["records"]:
                             raise RuntimeError("Cannot verify empty initial memory")
-                    pipeline = BasePipeline(store, Path(plan["run_directory"]))
+                    pipeline = BasePipeline(store, Path(plan["run_directory"]),
+                                            retrieval_k=plan["settings"]["retrieval_k"],
+                                            retrieval_meta=plan["settings"].get("retrieval_meta"))
                 elif not checkpoint:
                     write_json(artifacts / "memory_initial.json", {"status": "disabled", "records": []})
                 if not checkpoint:

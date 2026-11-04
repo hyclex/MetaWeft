@@ -5,6 +5,10 @@ from urllib.parse import quote
 import requests
 
 
+class StoreSearchError(RuntimeError):
+    """A search request or response failed; no result list is usable."""
+
+
 class StoreWriteError(RuntimeError):
     """A mutation could not be confirmed; its actual store outcome is uncertain."""
 
@@ -86,17 +90,22 @@ class ElasticsearchStore:
 
     def query(self, body):
         """Execute the caller's search body and return the complete ES response."""
-        response = self._request(
-            "POST", self._index_path + "/_search",
-            params={"allow_partial_search_results": "false"}, json=body,
-        )
+        try:
+            response = self._request(
+                "POST", self._index_path + "/_search",
+                params={"allow_partial_search_results": "false"}, json=body,
+            )
+        except (requests.RequestException, ValueError) as error:
+            raise StoreSearchError(f"Elasticsearch search failed: {type(error).__name__}: {error}") from error
         self._check_search(response)
         return response
 
     @staticmethod
     def _check_search(response):
+        if not isinstance(response, dict) or not isinstance(response.get("_shards", {}), dict):
+            raise StoreSearchError("Elasticsearch search returned an invalid response")
         if response.get("timed_out") or response.get("_shards", {}).get("failed", 0):
-            raise RuntimeError("Elasticsearch search returned incomplete results")
+            raise StoreSearchError("Elasticsearch search returned incomplete results")
 
     def export(self, *, page_size=1000):
         """Return every {id, document} without a result-window truncation."""

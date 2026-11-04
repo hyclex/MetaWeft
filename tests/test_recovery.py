@@ -36,6 +36,7 @@ TASKS = ["a_1", "b_1", "c_1"]
 class MemoryStore:
     def __init__(self):
         self.records = {}
+        self.index = "offline-memory"
 
     def create(self, mapping):
         self.mapping = deepcopy(mapping)
@@ -45,7 +46,7 @@ class MemoryStore:
         return document
 
     def query(self, body):
-        return {"hits": {"hits": [{"_id": key, "_source": value}
+        return {"hits": {"hits": [{"_id": key, "_source": value, "_score": 1.0}
                                    for key, value in self.records.items()][:body["size"]]}}
 
     def export(self):

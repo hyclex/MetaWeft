@@ -1,12 +1,14 @@
 """Variant-owned retrieval, adaptation, evidence and consolidation policy."""
 
 from dataclasses import asdict, dataclass, field
+from copy import deepcopy
 import json
 import math
 from pathlib import Path
 import uuid
 
 from MetaWeft.service.llm import LLMUnavailableError
+from MetaWeft.src.memory_retrieval import load_preset, retrieve, validate_meta
 
 
 def memory_index_body(dimensions=1024):
@@ -116,12 +118,20 @@ def _evidence_view(evidence):
 
 
 class BasePipeline:
-    def __init__(self, store, run_root, prompts=None):
+    def __init__(self, store, run_root, prompts=None, *, retrieval_k=5, retrieval_meta=None):
         self.store = store
         self.run_root = Path(run_root).resolve()
         self.prompts = Path(prompts) if prompts else Path(__file__).parent / "prompts/v1"
         self.templates = {name: (self.prompts / f"{name}.txt").read_text()
                           for name in ("adaptation", "reflection", "consolidation")}
+        self.retrieval_k = retrieval_k
+        self.retrieval_meta = deepcopy(retrieval_meta) if retrieval_meta is not None else load_preset("base")
+        validate_meta(self.retrieval_meta, k=self.retrieval_k)
+        base_meta = load_preset("base")
+        if (self.retrieval_meta["query_generation"] != base_meta["query_generation"]
+                or self.retrieval_meta["search"]["routes"] != base_meta["search"]["routes"]):
+            raise ValueError("Live base supports only identity retrieval over combined memory; "
+                             "evaluate expanded presets with the retrieval-only runner")
 
     def _chat(self, llm, name, payload):
         response = _call(
@@ -152,22 +162,47 @@ class BasePipeline:
         except (KeyError, TypeError) as error:
             raise StageFailure("Memory search returned invalid records") from error
 
-    def prepare_context(self, task_spec, *, llm, artifacts):
+    def prepare_context(self, task_spec, *, llm, artifacts, trace_context=None, call_refs=None):
         artifacts = Path(artifacts)
-        result = ContextResult()
-        retrieved = []
-        try:
-            response = _call(self.store.query, {"size": 1, "query": {"match_all": {}}})
-            if not response["hits"]["hits"]:
-                result.status = "empty_memory"
-            else:
-                vector = self._embed(llm, task_spec["instruction"], "retrieval")
-                retrieved = self._neighbors(vector)
-                result.retrieved_ids = [record["id"] for record in retrieved]
-        except StageFailure as error:
-            result = ContextResult(status="degraded", degraded=True, error=str(error))
+        saved_trace = {}
+
+        def record_trace(trace):
+            nonlocal saved_trace
+            saved_trace = deepcopy(trace)
+            saved_trace.update(deepcopy(trace_context or {}))
+            references = deepcopy(call_refs or {})
+            saved_trace["call_references"] = references
+            for query in saved_trace.get("queries", []):
+                query["generation_calls"] = references.get(query.get("generation_component"), [])
+            for search in saved_trace.get("searches", []):
+                search["embedding_calls"] = references.get(search.get("embedding_component"), [])
+            for generation in saved_trace.get("generations", []):
+                generation["calls"] = references.get(generation.get("component"), [])
+            if saved_trace.get("embedding"):
+                saved_trace["embedding"]["calls"] = references.get(saved_trace["embedding"].get("component"), [])
+            error = saved_trace.get("error")
+            _write(artifacts / "retrieval.json", {
+                "records": [], "status": saved_trace["status"],
+                "error": error["message"] if error else None, "trace": saved_trace,
+            })
+
+        retrieval = retrieve(task_spec["instruction"], self.retrieval_k, store=self.store, llm=llm,
+                             meta=self.retrieval_meta, record_trace=record_trace)
+        if any("source_refs" not in record for record in retrieval.records):
+            # The shared API permits memories without evidence references, but
+            # live base preserves its stronger existing memory schema.
+            retrieval.records = []
+            retrieval.status = "degraded"
+            retrieval.error = {"stage": "search", "type": "StageFailure",
+                               "message": "Memory search returned invalid records: missing source_refs"}
+            record_trace({**saved_trace, "status": retrieval.status, "error": retrieval.error})
+        retrieved = retrieval.records
+        result = ContextResult(status=retrieval.status, degraded=retrieval.status == "degraded",
+                               error=retrieval.error["message"] if retrieval.error else None,
+                               retrieved_ids=[record["id"] for record in retrieved])
         _write(artifacts / "retrieval.json", {"records": [_memory_view(r) for r in retrieved],
-                                             "status": result.status, "error": result.error})
+                                             "status": result.status, "error": result.error,
+                                             "trace": saved_trace})
         if retrieved and not result.degraded:
             try:
                 value = self._chat(llm, "adaptation", {

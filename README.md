@@ -19,6 +19,7 @@ ideas are not additional implementation requirements.
 | `service/llm/` | Provider calls, embeddings, bounded retries, and an injected call recorder. |
 | `service/elasticsearch/` | Storage, retrieval primitives, confirmed writes, and complete exports. |
 | `src/base/` | The reference memory representation and retrieve/adapt/reflect/consolidate policy. |
+| `src/memory_retrieval/` | Shared query generation, vector search, RRF fusion, presets, and retrieval traces. |
 | `src/base/prompts/` | Explicit, versioned prompts owned by the baseline. |
 | `experiment/appworld/` | Thin setting entrypoints, AppWorld execution integration, run lifecycle, and adjacent variant descriptors. |
 | `tests/` | Offline behavior and reporting checks. |
@@ -60,6 +61,19 @@ the recovery plan. Only runs created with the new checkpoint format are supporte
 see [recovery usage](experiment/appworld/README.md#recovery).
 
 ## Reference comparison
+
+Base's pre-execution retrieval uses the shared
+[retrieval framework](src/memory_retrieval/README.md) with the `base` preset: the
+original task searches the combined memory vector, and single-list RRF preserves
+the search order. Its resolved retrieval configuration is saved with each run.
+Consolidation retains its separate existing neighbor search and update policy.
+
+The framework also provides `setting_1` through `setting_4` for query expansion
+and representation comparisons. These are retrieval-only experimental presets;
+the live AppWorld settings remain `base` and `direct`. Use the single
+[retrieval benchmark runner](../evaluations/appworld_mem_retrieval/README.md) to
+select a preset, inspect its trace, or recover a failed retrieval run. Expanded
+live memory maintenance and setting wrappers await a later promotion decision.
 
 `base` starts empty for each test split, retrieves up to five memories, adapts them
 once, executes with fixed guidance, reflects on the trace and scalar reward, and

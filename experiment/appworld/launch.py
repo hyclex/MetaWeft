@@ -26,6 +26,7 @@ from MetaWeft.experiment.recovery import (
     seal_run, select_parent, selection, write_json,
 )
 from MetaWeft.service.llm.config import retry_defaults
+from MetaWeft.src.memory_retrieval import load_preset
 
 
 SETTINGS = {
@@ -79,6 +80,9 @@ def make_plan(setting, args):
             "output_directory": str(root / "experiments/outputs" / split),
             "adapt": setting == "base", "status": "planned",
         })
+    settings = {**SETTINGS, **retry_defaults()}
+    if setting == "base":
+        settings["retrieval_meta"] = load_preset("base", num_candidates=settings["retrieval_candidates"])
     return {
         "baseline": "metaweft", "setting": setting, "setting_id": setting_id,
         "variant_id": f"metaweft-{setting}-v1", "run_id": f"{setting_id}-{tag}",
@@ -87,7 +91,7 @@ def make_plan(setting, args):
         "note": args.note, "status": "planned", "phases": phases,
         "partial": any(p["partial"] for p in phases), "repetitions": 1,
         "task_order": "manifest order", "memory_reset": "empty independently for each split",
-        "settings": {**SETTINGS, **retry_defaults()}, "command": [sys.executable, *sys.argv],
+        "settings": settings, "command": [sys.executable, *sys.argv],
         "recovery_version": RECOVERY_VERSION, "recovery_ready": False,
         "selection": selection(setting, args), "created_at": datetime.now(timezone.utc).isoformat(),
         "degraded_task_ids": [], "degraded_reasons": {}, "evidence_gaps": [],

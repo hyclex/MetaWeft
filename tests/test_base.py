@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 from MetaWeft.src.base import BasePipeline, memory_index_body
 from MetaWeft.service.llm import LLMUnavailableError
+from MetaWeft.service.elasticsearch import StoreSearchError
+from MetaWeft.src.memory_retrieval import load_preset
 
 
 TASK = {"task_id": "example_1", "instruction": "Find all pages of results",
@@ -32,7 +34,7 @@ class FakeStore:
 
     def query(self, body):
         self.queries.append(body)
-        return {"hits": {"hits": [{"_id": key, "_source": value}
+        return {"hits": {"hits": [{"_id": key, "_source": value, "_score": 1.0}
                                    for key, value in list(self.records.items())[:body["size"]]]}}
 
     def put(self, identifier, document):
@@ -118,10 +120,75 @@ class BaseTests(unittest.TestCase):
         self.assertTrue(json.loads((self.artifacts / "adaptation.json").read_text())["degraded"])
 
     def test_retrieval_failure_continues_without_guidance(self):
-        with patch.object(self.store, "query", side_effect=RuntimeError("store unavailable")):
+        with patch.object(self.store, "query", side_effect=StoreSearchError("store unavailable")):
             result = self.pipeline.prepare_context(TASK, llm=FakeLLM(), artifacts=self.artifacts)
         self.assertTrue(result.degraded)
         self.assertIn("store unavailable", result.error)
+
+    def test_unexpected_retrieval_error_is_fatal(self):
+        with patch.object(self.store, "query", side_effect=RuntimeError("programming error")):
+            with self.assertRaisesRegex(RuntimeError, "programming error"):
+                self.pipeline.prepare_context(TASK, llm=FakeLLM(), artifacts=self.artifacts)
+
+    def test_shared_retrieval_preserves_exact_query_and_legacy_artifact(self):
+        self.existing("first")
+        self.existing("second")
+        instruction = "  Keep original\nwhitespace  "
+        llm = FakeLLM([{"guidance": "use both"}])
+        result = self.pipeline.prepare_context({**TASK, "instruction": instruction}, llm=llm,
+                                               artifacts=self.artifacts)
+        self.assertEqual(result.retrieved_ids, ["first", "second"])
+        self.assertEqual(llm.embeddings[0][0], [instruction])
+        self.assertEqual(self.store.queries, [
+            {"size": 1, "query": {"match_all": {}}},
+            {"size": 5, "knn": {"field": "embedding", "query_vector": [1.0, 0.0],
+                                  "k": 5, "num_candidates": 10}},
+        ])
+        artifact = json.loads((self.artifacts / "retrieval.json").read_text())
+        self.assertEqual(artifact["status"], "completed")
+        self.assertIsNone(artifact["error"])
+        self.assertEqual([record["id"] for record in artifact["records"]], ["first", "second"])
+        self.assertNotIn("embedding", artifact["records"][0])
+        self.assertEqual(artifact["trace"]["meta"]["name"], "base")
+
+    def test_resolved_retrieval_limits_do_not_change_consolidation(self):
+        self.existing()
+        pipeline = BasePipeline(self.store, self.root, retrieval_k=2,
+                                retrieval_meta=load_preset("base", num_candidates=7))
+        pipeline.prepare_context(TASK, llm=FakeLLM([{"guidance": ""}]), artifacts=self.artifacts)
+        self.assertEqual(self.store.queries[-1]["knn"]["k"], 2)
+        self.assertEqual(self.store.queries[-1]["knn"]["num_candidates"], 7)
+        pipeline._neighbors([1.0, 0.0])
+        self.assertEqual(self.store.queries[-1]["knn"]["k"], 5)
+        self.assertEqual(self.store.queries[-1]["knn"]["num_candidates"], 10)
+
+    def test_disabled_retrieval_makes_no_search_or_model_calls(self):
+        pipeline = BasePipeline(self.store, self.root, retrieval_k=0)
+        llm = FakeLLM()
+        result = pipeline.prepare_context(TASK, llm=llm, artifacts=self.artifacts)
+        self.assertEqual(result.status, "disabled")
+        self.assertEqual((self.store.queries, llm.calls, llm.embeddings), ([], [], []))
+
+    def test_live_base_rejects_expanded_retrieval_before_search(self):
+        for name in ("setting_1", "setting_2", "setting_3", "setting_4"):
+            with self.subTest(preset=name), self.assertRaisesRegex(ValueError, "retrieval-only runner"):
+                BasePipeline(self.store, self.root, retrieval_meta=load_preset(name))
+        self.assertEqual(self.store.queries, [])
+        renamed = load_preset("base")
+        renamed["name"] = "descriptive-label-only"
+        BasePipeline(self.store, self.root, retrieval_meta=renamed)
+
+    def test_live_memory_without_source_refs_degrades_before_adaptation(self):
+        record = self.existing()
+        del record["source_refs"]
+        llm = FakeLLM()
+        result = self.pipeline.prepare_context(TASK, llm=llm, artifacts=self.artifacts)
+        self.assertTrue(result.degraded)
+        self.assertEqual((result.retrieved_ids, result.guidance, llm.calls), ([], "", []))
+        artifact = json.loads((self.artifacts / "retrieval.json").read_text())
+        self.assertEqual(artifact["records"], [])
+        self.assertEqual(artifact["trace"]["status"], "degraded")
+        self.assertIsInstance(artifact["error"], str)
 
     def test_failed_task_can_add_grounded_memory_and_excludes_evaluator_fields(self):
         evidence = {**EVIDENCE, "report": "SECRET ASSERTION", "solution": "SECRET SOLUTION",

@@ -55,6 +55,17 @@ boundaries. They do not provide training, arbitrary warm-start memory, within-ta
 resume, repetitions within an invocation, or parallel task execution. Every
 invocation gets a unique output directory; prior runs are not overwritten.
 
+Base pre-task retrieval runs through the shared
+[retrieval framework](../../src/memory_retrieval/README.md) using its `base`
+configuration. `resolved_settings.json` captures `settings.retrieval_meta` and
+the retrieval limit consumed by the pipeline. The original task searches only
+the combined vector; one-list RRF preserves its order. Consolidation keeps its
+separate five-neighbor search and existing memory updates.
+
+The four expanded retrieval presets are available only through the
+[retrieval benchmark](../../../evaluations/appworld_mem_retrieval/README.md).
+The live setting choices and recovery interface remain `base` and `direct`.
+
 ## Recovery
 
 Repeat the original setting, dataset, split, and `--limit`/`--task-id` selection
@@ -120,6 +131,13 @@ calls, databases, and official task reports retain the established layout.
 Memory-stage artifacts preserve retrieval, guidance, allowed evidence, update
 decisions, and memory evolution. The run snapshots source, prompts, descriptor,
 resolved controls, task order, and runtime identity.
+
+Each task's `retrieval.json` retains its top-level `records`, `status`, and
+string-or-null `error`. Its versioned `trace` adds resolved retrieval metadata,
+bank/model/prompt references, query and search details, raw search scores, RRF
+contributions, timing, and partial progress on failure. Trace call references
+identify the corresponding physical attempts in canonical `lm_calls.jsonl`,
+including retries. Vectors remain in memory snapshots, not retrieval traces.
 
 `completed` means the requested stream and evaluation finished. It does not mean
 all tasks were solved or all memory stages succeeded. Check `degraded_task_ids`

@@ -20,6 +20,8 @@ from appworld_experiments.code.common.lm_logger import task_lm_logger
 from MetaWeft.experiment.appworld import executor, worker
 from MetaWeft.experiment.recovery import commit_checkpoint, write_json
 from MetaWeft.service.llm import LLMUnavailableError, ModelClient
+from MetaWeft.src.memory_retrieval import load_preset
+from MetaWeft.src.base import BasePipeline
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -133,6 +135,42 @@ class CanonicalRecorderTests(unittest.TestCase):
             self.assertEqual(row["output"]["vector_count"], 1)
             self.assertEqual(len(row["output"]["vector_hashes"]), 1)
             self.assertNotIn("data", row["output"])
+
+    def test_retrieval_trace_links_embedding_retries_to_canonical_calls(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            logger = task_lm_logger(root / "outputs", "split", "metaweft", "fake_1")
+            refs = {}
+            vector = SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[0.1, 0.2])],
+                                     model_dump=lambda: {"data": [{"index": 0, "embedding": [0.1, 0.2]}],
+                                                         "usage": {"total_tokens": 2}})
+            adapted = response('{"guidance": "Use the memory"}')
+            adapted.model_dump = lambda: {"choices": [{"message": {"content": adapted.choices[0].message.content}}]}
+            provider = Mock()
+            provider.embeddings.create.side_effect = [TimeoutError("retry embedding"), vector]
+            provider.chat.completions.create.return_value = adapted
+            model = ModelClient(client=provider, chat_model="test", dimensions=2, sleep=Mock(),
+                                recorder=worker.physical_recorder(logger, refs))
+            store = Mock()
+            store.query.return_value = {"hits": {"hits": [{"_id": "memory", "_score": 1.0,
+                "_source": {"id": "memory", "when_to_use": "For the example", "content": "Follow the example",
+                            "source_refs": [], "embedding": [0.1, 0.2]}}]}}
+            artifacts = root / "artifacts"
+            pipeline = BasePipeline(store, root)
+            result = pipeline.prepare_context(TASK_SPEC, llm=model, artifacts=artifacts,
+                                               trace_context={"bank": {"index": "offline"},
+                                                              "model_settings": {"chat_model": "test"}, "prompts": {}},
+                                               call_refs=refs)
+            self.assertEqual(result.guidance, "Use the memory")
+            trace = json.loads((artifacts / "retrieval.json").read_text())["trace"]
+            rows = [json.loads(line) for line in logger.path.read_text().splitlines()]
+            embedding_rows = [row for row in rows if row["metadata"]["phase"] == "retrieval"]
+            calls = trace["searches"][0]["embedding_calls"]
+            self.assertEqual([call["physical_call_id"] for call in calls], [row["id"] for row in embedding_rows])
+            self.assertEqual([call["attempt"] for call in calls], [1, 2])
+            self.assertEqual(len({call["logical_call_id"] for call in calls}), 1)
+            self.assertEqual(trace["bank"], {"index": "offline"})
+            self.assertEqual(trace["model_settings"]["chat_model"], "test")
 
 
 class EpisodeTests(unittest.TestCase):
@@ -273,6 +311,7 @@ class AdapterTests(unittest.TestCase):
         prepared = SimpleNamespace(guidance="", degraded=False, to_dict=lambda: {"status": "empty_memory"})
         updated = SimpleNamespace(degraded=False, to_dict=lambda: {"status": "completed"})
         pipeline = Mock()
+        pipeline.retrieval_meta = load_preset("base")
         pipeline.prepare_context.return_value = prepared
         pipeline.post_task.return_value = updated
         store = Mock()
@@ -306,6 +345,7 @@ class AdapterTests(unittest.TestCase):
         self.plan["setting"] = "base"
         stage = SimpleNamespace(guidance="", degraded=False, to_dict=lambda: {})
         pipeline = Mock(prepare_context=Mock(return_value=stage), post_task=Mock(return_value=stage))
+        pipeline.retrieval_meta = load_preset("base")
         store = Mock(export=Mock(side_effect=RuntimeError("store unavailable")))
         with self.assertRaisesRegex(RuntimeError, "Cannot checkpoint"):
             self.run_adapter(pipeline, store)

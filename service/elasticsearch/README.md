@@ -24,7 +24,9 @@ store.close()
   reads back and returns the confirmed document. Documents are not modified.
 - `delete(id)` waits for search visibility and confirms absence.
 - `query(body)` returns the complete search response, including IDs and scores.
-  Timed-out searches and partial shard results raise instead of becoming retrievals.
+  Request/JSON failures, timed-out searches, and partial shard results raise
+  `StoreSearchError` (a `RuntimeError` subclass) instead of becoming retrievals.
+  It does not retry; callers decide how a failed retrieval affects their workflow.
 - `export(page_size=1000)` scrolls through all documents and returns `{id,
   document}` entries sorted by ID. A failed page raises; no partial snapshot is
   returned. The count is checked against Elasticsearch's exact total. The scroll

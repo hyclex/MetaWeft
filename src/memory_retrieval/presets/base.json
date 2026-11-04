@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "base",
+  "description": "Original task against the combined memory representation.",
+  "query_generation": {"branches": [{"id": "identity", "method": "identity"}]},
+  "search": {"num_candidates": 10, "routes": [{"branch": "identity", "representation": "combined"}]},
+  "fusion": {"method": "rrf", "rank_constant": 60}
+}

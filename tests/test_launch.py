@@ -43,6 +43,18 @@ class LaunchTests(unittest.TestCase):
             self.assertNotEqual(plan["run_id"], launch.make_plan(setting, args)["run_id"])
         self.assertEqual(selected, [["ff58e36_1", "ff58e36_2"]] * 2)
 
+    def test_base_snapshots_resolved_retrieval_preset_without_new_live_settings(self):
+        for setting in ("base", "direct"):
+            args = launch.parse_args(setting, ["--dataset", "2h", "--limit", "2"])
+            settings = launch.make_plan(setting, args)["settings"]
+            if setting == "base":
+                meta = settings["retrieval_meta"]
+                self.assertEqual(meta["name"], "base")
+                self.assertEqual(meta["query_generation"]["branches"], [{"id": "identity", "method": "identity"}])
+                self.assertEqual(meta["search"]["num_candidates"], settings["retrieval_candidates"])
+            else:
+                self.assertNotIn("retrieval_meta", settings)
+
     def test_test_all_keeps_separate_ordered_phases(self):
         args = launch.parse_args("base", ["--dataset", "2h", "--limit", "1"])
         phases = launch.make_plan("base", args)["phases"]

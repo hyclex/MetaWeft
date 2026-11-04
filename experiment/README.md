@@ -43,6 +43,33 @@ logs, and accounting before recording validation results. A cold-start first tas
 alone cannot test nonempty retrieval or adaptation. Offline fixtures cover the
 operation branches that two live tasks may not naturally reach.
 
+## Retrieval-only validation
+
+The shared retrieval framework offers `base` and `setting_1` through `setting_4`.
+These presets use one configurable benchmark entrypoint; they are not additional
+live AppWorld settings. The benchmark reads an existing frozen pool and never
+executes AppWorld tasks or updates memory.
+
+```bash
+# Offline checks; no provider calls.
+python3 -B -m unittest discover -s evaluations/appworld_mem_retrieval/tests -v
+
+# Inspect a two-query selection without writes or provider calls.
+python3 -B evaluations/appworld_mem_retrieval/scenarios/base.py --preset setting_4 --limit 2 --dry-run
+
+# Live retrieval only: two queries per preset against the full prepared pool.
+for preset in base setting_1 setting_2 setting_3 setting_4; do
+  python3 -B evaluations/appworld_mem_retrieval/scenarios/base.py --preset "$preset" --limit 2
+done
+```
+
+The two-query matrix verifies operability, not improved retrieval quality. Keep
+all runs and inspect coverage, traces, and canonical calls. See the
+[retrieval benchmark README](../../evaluations/appworld_mem_retrieval/README.md)
+for representations, metrics, checkpoint recovery, and output details. Its
+`--recover RUN_DIRECTORY` resumes retrieval queries; the AppWorld recovery
+commands below resume full task streams.
+
 ## Recovery
 
 Repeat the original selection options and add `--recover`. Inspect the selected
