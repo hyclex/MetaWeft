@@ -54,6 +54,14 @@ provider/model/dimensions, and finite vectors before indexing.
 | `setting_2` | Two applicability queries | Applicability | 3 |
 | `setting_3` | Same prompt/controls as Setting 1 | Content | 3 |
 | `setting_4` | Two general and two applicability queries | Each branch's corresponding field | 6 |
+| `setting_5` | Two queries from a training-derived applicability prompt | Applicability | 3 |
+| `setting_6` | Same prompt as Setting 5 plus three training demonstrations | Applicability | 3 |
+
+Settings 5–6 inherit Setting 2's controls and retrieval mechanics. Their prompt
+authoring evidence and family-disjoint 9/107 query split are recorded in the
+[retrieval benchmark](../../../evaluations/appworld_mem_retrieval/README.md#training-derived-prompts-settings-5-and-6).
+The split affects evaluation query selection only; the full memory bank remains
+unchanged. No new full test-set evaluation was part of implementation validation.
 
 Every branch includes the exact original task first. Generated strings are
 trimmed; whitespace-normalized, case-sensitive duplicates are recorded and

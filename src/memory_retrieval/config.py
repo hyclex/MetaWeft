@@ -7,9 +7,11 @@ from pathlib import Path
 
 
 PACKAGE = Path(__file__).parent
-PRESETS = ("base", "setting_1", "setting_2", "setting_3", "setting_4")
+PRESETS = ("base", "setting_1", "setting_2", "setting_3", "setting_4", "setting_5", "setting_6")
 PROMPTS = {"general_v1": "prompts/v1/general.txt",
-           "applicability_v1": "prompts/v1/applicability.txt"}
+           "applicability_v1": "prompts/v1/applicability.txt",
+           "applicability_optimized_v1": "prompts/v1/applicability_optimized.txt",
+           "applicability_fewshot_v1": "prompts/v1/applicability_fewshot.txt"}
 REPRESENTATIONS = {
     "combined": {"dataset_field": "ReMe_emb", "field": "embedding",
                  "input": 'when_to_use + "\\n\\n" + content'},

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "name": "setting_6",
+  "description": "Setting 2 with a training-derived applicability prompt and three demonstrations.",
+  "query_generation": {
+    "branches": [
+      {
+        "id": "applicability",
+        "method": "llm",
+        "prompt": "applicability_fewshot_v1",
+        "generated_count": 2
+      }
+    ]
+  },
+  "search": {
+    "num_candidates": 10,
+    "routes": [
+      {
+        "branch": "applicability",
+        "representation": "applicability"
+      }
+    ]
+  },
+  "fusion": {
+    "method": "rrf",
+    "rank_constant": 60
+  }
+}

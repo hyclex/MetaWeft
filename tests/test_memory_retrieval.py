@@ -153,6 +153,29 @@ class RetrievalTests(unittest.TestCase):
             self.run_retrieval(meta=meta, llm=FakeLLM([{"queries": [f"query {i}" for i in range(count)]}]))
             self.assertEqual(len(self.store.requests), count + 2)
 
+    def test_optimized_presets_change_only_system_prompt(self):
+        requests, searches = [], []
+        for preset in ("setting_2", "setting_5", "setting_6"):
+            self.run_retrieval(preset=preset, llm=FakeLLM([{"queries": ["one", "two"]}]))
+            request = deepcopy(self.llm.chats[0])
+            prompt = request["messages"].pop(0)["content"]
+            self.assertEqual(prompt, next(iter(prompt_manifest(load_preset(preset)).values()))["text"])
+            self.assertEqual(json.loads(request["messages"][0]["content"]),
+                             {"task": "Read all pages", "generated_count": 2})
+            requests.append(request)
+            searches.append(self.store.requests)
+            self.assertEqual(self.llm.embeddings[0]["texts"], ["Read all pages", "one", "two"])
+        self.assertEqual(requests, [requests[0]] * 3)
+        self.assertEqual(searches, [searches[0]] * 3)
+
+    def test_setting_six_is_exact_setting_five_plus_three_examples(self):
+        fifth = next(iter(prompt_manifest(load_preset("setting_5")).values()))["text"]
+        sixth = next(iter(prompt_manifest(load_preset("setting_6")).values()))["text"]
+        self.assertTrue(sixth.startswith(fifth + "\nDemonstrations"))
+        self.assertNotIn("\nInput:", fifth)
+        self.assertEqual(sixth[len(fifth):].count("\nInput:"), 3)
+        self.assertEqual(sixth[len(fifth):].count("\nOutput:"), 3)
+
     def test_deduplication_preserves_original_case_and_does_not_refill(self):
         meta = load_preset("setting_1")
         meta["query_generation"]["branches"][0]["generated_count"] = 3
