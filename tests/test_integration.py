@@ -19,7 +19,7 @@ from appworld_experiments.code.common.episodes import EpisodeService
 from appworld_experiments.code.common.lm_logger import task_lm_logger
 from MetaWeft.experiment.appworld import executor, worker
 from MetaWeft.experiment.recovery import commit_checkpoint, write_json
-from MetaWeft.service.llm import LLMUnavailableError, ModelClient
+from MetaWeft.service.llm import LLMCacheError, LLMUnavailableError, ModelClient
 from MetaWeft.src.memory_retrieval import load_preset
 from MetaWeft.src.base import BasePipeline
 
@@ -103,6 +103,7 @@ class CanonicalRecorderTests(unittest.TestCase):
             value.model_dump = lambda: completion
             provider.chat.completions.create.side_effect = [error, value]
             model = ModelClient(client=provider, chat_model="test", recorder=worker.physical_recorder(logger),
+                                cache_mode="no_cache", cache_path=Path(temporary) / "llm.sqlite3",
                                 sleep=Mock())
             self.assertIs(model.chat([], phase="adaptation", component="base"), value)
             rows = [json.loads(line) for line in logger.path.read_text().splitlines()]
@@ -128,6 +129,7 @@ class CanonicalRecorderTests(unittest.TestCase):
             provider = Mock()
             provider.embeddings.create.return_value = value
             model = ModelClient(client=provider, chat_model="test", dimensions=2,
+                                cache_mode="no_cache", cache_path=Path(temporary) / "llm.sqlite3",
                                 recorder=worker.physical_recorder(logger))
             self.assertEqual(model.embed(["text"], phase="retrieval", component="embedding"), [[0.1, 0.2]])
             row = json.loads(logger.path.read_text())
@@ -150,6 +152,7 @@ class CanonicalRecorderTests(unittest.TestCase):
             provider.embeddings.create.side_effect = [TimeoutError("retry embedding"), vector]
             provider.chat.completions.create.return_value = adapted
             model = ModelClient(client=provider, chat_model="test", dimensions=2, sleep=Mock(),
+                                cache_mode="no_cache", cache_path=Path(temporary) / "llm.sqlite3",
                                 recorder=worker.physical_recorder(logger, refs))
             store = Mock()
             store.query.return_value = {"hits": {"hits": [{"_id": "memory", "_score": 1.0,
@@ -171,6 +174,52 @@ class CanonicalRecorderTests(unittest.TestCase):
             self.assertEqual(len({call["logical_call_id"] for call in calls}), 1)
             self.assertEqual(trace["bank"], {"index": "offline"})
             self.assertEqual(trace["model_settings"]["chat_model"], "test")
+
+    def test_cache_replay_has_trace_attribution_without_incurred_provider_usage(self):
+        from openai.types.chat import ChatCompletion
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "outputs/split"
+            logger = task_lm_logger(output.parent, "split", "metaweft", "fake_1")
+            provider = Mock()
+            provider.chat.completions.create.return_value = ChatCompletion(
+                id="offline", created=1, model="test", object="chat.completion",
+                choices=[{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+                usage={"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+            )
+            references = {}
+            for phase in ("adaptation", "execution"):
+                model = ModelClient(client=provider, base_url="https://provider.invalid/v1", chat_model="test",
+                                    cache_mode="cache",
+                                    cache_path=root / "llm.sqlite3", recorder=worker.physical_recorder(logger, references))
+                try:
+                    result = model.chat([], phase=phase, component=phase)
+                    self.assertEqual(result.choices[0].message.content, "ok")
+                finally:
+                    model.close()
+            provider.chat.completions.create.assert_called_once()
+            rows = [json.loads(line) for line in logger.path.read_text().splitlines()]
+            self.assertEqual([row["metadata"]["extra"]["cache"]["hit"] for row in rows], [False, True])
+            self.assertEqual(rows[1]["metadata"]["attempt"], 0)
+            self.assertEqual(rows[1]["output"]["usage"]["total_tokens"], 3)
+            self.assertEqual(references["execution"][0]["physical_call_id"], rows[1]["id"])
+            self.assertTrue(references["execution"][0]["cache"]["hit"])
+            totals = worker.accounting(output)
+            self.assertEqual(totals["recorded_calls"], 1)
+            self.assertEqual(totals["cache_hits"], 1)
+            self.assertEqual(totals["cache_hits_by_phase"], {"execution": 1})
+            self.assertEqual(totals["reported_tokens"]["total_tokens"], 3)
+            self.assertEqual(totals["missing_usage_calls"], 0)
+
+    def test_cache_storage_failure_bypasses_memory_stage_fallback(self):
+        from MetaWeft.src.base.pipeline import _call
+
+        error = LLMCacheError(operation="read", phase="adaptation", key="key", attempts=3,
+                              cause=OSError("cache unavailable"))
+        with self.assertRaises(LLMCacheError) as raised:
+            _call(Mock(side_effect=error))
+        self.assertIs(raised.exception, error)
 
 
 class EpisodeTests(unittest.TestCase):
@@ -241,6 +290,7 @@ class AdapterTests(unittest.TestCase):
                      "settings": {"chat_model": "test", "embedding_model": "embed",
                                   "embedding_dimensions": 2, "max_interactions": 2,
                                   "max_retries": 0, "retry_delay_seconds": 0,
+                                  "cache_mode": "no_cache", "cache_path": str(self.root / "llm.sqlite3"),
                                   "chat_timeout": 120, "embedding_timeout": 30}}
         self.phase = {"output_directory": str(self.output), "ordered_task_ids": ["fake_1"]}
         self.manifest = {"completed_task_ids": [], "degraded_task_ids": [], "degraded_reasons": {}}
@@ -413,6 +463,7 @@ class ResponseLoggingTests(unittest.TestCase):
             provider = Mock()
             provider.chat.completions.create.side_effect = [empty, valid]
             model = ModelClient(client=provider, chat_model="test", max_retries=1, retry_delay_seconds=0,
+                                cache_mode="no_cache", cache_path=Path(temporary) / "llm.sqlite3",
                                 recorder=worker.physical_recorder(logger))
             self.assertIs(model.chat([], phase="execution", component="react"), valid)
             rows = [json.loads(line) for line in logger.path.read_text().splitlines()]
@@ -431,6 +482,7 @@ class ResponseLoggingTests(unittest.TestCase):
             provider = Mock()
             provider.embeddings.create.side_effect = [invalid, valid]
             model = ModelClient(client=provider, chat_model="test", dimensions=2, max_retries=1,
+                                cache_mode="no_cache", cache_path=Path(temporary) / "llm.sqlite3",
                                 retry_delay_seconds=0, recorder=worker.physical_recorder(logger))
             self.assertEqual(model.embed(["a"], phase="retrieval", component="base"), [[0.1, 0.2]])
             rows = [json.loads(line) for line in logger.path.read_text().splitlines()]

@@ -11,6 +11,20 @@ The supported settings are `base` (cold-start memory) and `direct`. Each support
 Each command below is a separate launch; choose the combination you need.
 `test-all` includes both test splits with independent memory initialization.
 
+LLM calls default to `no_cache` (fresh calls that still populate the shared
+response store). For repeated design tests, add `--cache-mode cache`; use
+`--cache-mode timed_cache` for a 30-minute lifetime. The default database is
+`raw_logs/.cache/metaweft/llm.sqlite3`, overridable with `--cache-path PATH`.
+For example, from the workspace root:
+
+```bash
+bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-normal --limit 2 --cache-mode cache
+```
+
+This is a live run on misses. Reused responses are logged separately from incurred
+provider usage. Recovery preserves the original cache settings; use `no_cache`
+for fresh stochastic repetitions. See the [cache contract](../service/llm/README.md#response-cache).
+
 ## Inspect and check
 
 ```bash

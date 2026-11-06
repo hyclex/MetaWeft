@@ -225,7 +225,7 @@ def restore_memory(store, snapshot):
 
 
 def accounting(output):
-    """Count distinct physical calls, retaining inherited failures and unknown usage."""
+    """Count physical calls and cache replays, retaining failures and unknown usage."""
     output = Path(output)
     manifest_path = output / "run_manifest.json"
     manifest = read_json(manifest_path) if manifest_path.is_file() else {}
@@ -245,9 +245,12 @@ def accounting(output):
                 inherited.add(identifier)
 
     def totals(calls):
-        phases, tokens = Counter(), Counter()
+        phases, tokens, cache_phases = Counter(), Counter(), Counter()
         missing = 0
         for call in calls:
+            if call["metadata"].get("extra", {}).get("cache", {}).get("hit", False):
+                cache_phases[call["metadata"]["phase"]] += 1
+                continue
             phases[call["metadata"]["phase"]] += 1
             usage = call["output"].get("usage") if isinstance(call["output"], dict) else None
             reported = {}
@@ -259,7 +262,8 @@ def accounting(output):
             if not reported:
                 missing += 1
             tokens.update(reported)
-        return {"recorded_calls": len(calls), "recorded_calls_by_phase": dict(phases),
+        return {"recorded_calls": sum(phases.values()), "recorded_calls_by_phase": dict(phases),
+                "cache_hits": sum(cache_phases.values()), "cache_hits_by_phase": dict(cache_phases),
                 "reported_tokens": dict(tokens), "missing_usage_calls": missing, "cost_usd": None}
 
     result = totals(list(records.values()))
@@ -267,7 +271,8 @@ def accounting(output):
         current_attempt=totals([record for key, record in records.items() if key not in inherited]),
         inherited=totals([records[key] for key in inherited]),
         pricing_assumptions="Provider rates unverified; unknown is not zero.",
-        coverage="Cumulative distinct physical calls across all stages and recovery attempts; no billed preflight.",
+        coverage="Cumulative distinct physical calls across all stages and recovery attempts; "
+                 "cache replays counted separately with no incurred provider usage; no billed preflight.",
         retry_coverage="SDK retries disabled; explicit attempt budget recorded in resolved settings.",
     )
     write_json(output / "accounting.json", result)

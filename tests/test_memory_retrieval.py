@@ -3,6 +3,8 @@
 from copy import deepcopy
 import json
 import math
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
@@ -323,6 +325,8 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(traces[-1]["status"], "failed")
 
     def test_transient_provider_failure_retries_and_keeps_logical_component_identity(self):
+        cache_directory = TemporaryDirectory()
+        self.addCleanup(cache_directory.cleanup)
         attempts, sleep = [], Mock()
         provider = SimpleNamespace(
             chat=SimpleNamespace(completions=SimpleNamespace(create=Mock(side_effect=[
@@ -336,6 +340,7 @@ class RetrievalTests(unittest.TestCase):
             attempts.append({"operation": operation, **context})
             return invoke()
         llm = ModelClient(client=provider, chat_model="test", dimensions=2, recorder=record,
+                          cache_mode="no_cache", cache_path=Path(cache_directory.name) / "llm.sqlite3",
                           max_retries=1, retry_delay_seconds=0, sleep=sleep)
         result = self.run_retrieval(preset="setting_1", llm=llm)
         self.assertEqual(result.status, "completed")

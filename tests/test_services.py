@@ -1,6 +1,8 @@
 """Offline service checks; provider and Elasticsearch transports are fakes."""
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -34,12 +36,15 @@ class RecordingCalls:
 
 class ModelTests(unittest.TestCase):
     def setUp(self):
+        cache_directory = TemporaryDirectory()
+        self.addCleanup(cache_directory.cleanup)
         self.provider = Mock()
         self.recorder = RecordingCalls()
         self.sleep = Mock()
         self.client = ModelClient(
             client=self.provider, chat_model="chat-test", embedding_model="embed-test",
             dimensions=2, recorder=self.recorder, sleep=self.sleep,
+            cache_mode="no_cache", cache_path=Path(cache_directory.name) / "llm.sqlite3",
         )
 
     def test_retry_attempts_share_identity_and_preserve_usage(self):

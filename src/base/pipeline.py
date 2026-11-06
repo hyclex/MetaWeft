@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 import uuid
 
-from MetaWeft.service.llm import LLMUnavailableError
+from MetaWeft.service.llm import LLMCacheError, LLMUnavailableError
 from MetaWeft.src.memory_retrieval import load_preset, retrieve, validate_meta
 
 
@@ -66,7 +66,7 @@ def _call(function, *args, **kwargs):
     """Only provider/storage calls enter this recoverable-error boundary."""
     try:
         return function(*args, **kwargs)
-    except LLMUnavailableError:
+    except (LLMCacheError, LLMUnavailableError):
         raise
     except Exception as error:
         if any(base.__name__ == "LLMLoggingError" for base in type(error).__mro__):

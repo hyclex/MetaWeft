@@ -46,8 +46,9 @@ missing outputs or failed evaluation are infrastructure errors.
 
 Each invocation lives under `raw_logs/metaweft-<setting>-<dataset>/experiment/output/`
 with a timestamp and random suffix. Each test split gets its own process, memory
-index, mutable databases, and state. Cache and temporary paths are invocation
-local. Read-only runtime/data assets may be shared. Recovery creates another
+index, mutable databases, and state. Runtime cache and temporary paths are invocation
+local. The explicit shared LLM response store is an exception; it holds completed
+responses, never mutable benchmark state. Read-only runtime/data assets may be shared. Recovery creates another
 isolated invocation linked to the failed parent; it never edits that parent.
 
 Copy MetaWeft and the relevant current sibling source before executing workers;
@@ -78,8 +79,12 @@ Incomplete-task outputs and partial updates are archived separately and never
 used as restored state. The adapter bypasses completed tasks before model calls
 or memory mutations, while the shared runner retains the full dataset for final
 evaluation. Completed phases are copied; unstarted splits still begin empty.
-Source import links are rebuilt inside the new directory, and caches/ES state
-are newly allocated. Repeated recovery carries all earlier failure evidence.
+Source import links are rebuilt inside the new directory, and runtime caches/ES
+state are newly allocated. Resolved LLM cache mode/path remain those of the parent.
+Pending full responses in task `llm_cache_pending` artifacts are restored before
+provider calls, preserving original timestamps. The selected mode still governs
+restarted calls; `no_cache` never reuses an unfinished task's prior response.
+Repeated recovery carries all earlier failure evidence.
 
 ## Logging, failure, and collection
 
@@ -90,8 +95,17 @@ reflection, consolidation, embeddings, and retries; missing usage and unknown
 pricing must remain visible. Do not substitute custom traces for native AppWorld
 logs and output databases.
 
+The same canonical logger records cache hits with `attempt=0` and
+`metadata.extra.cache`; physical attempts start at one. Hits retain original
+response usage as evidence but are excluded from incurred token/cost totals and
+physical-call counts. The default `no_cache` mode stores successful responses
+while making fresh calls. Opt-in `cache` and `timed_cache` reuse matching samples,
+so experiments must retain and compare their resolved cache settings.
+
 Exhausted provider calls stop the stream from every stage and preserve a structured
 failure record. Other memory-stage fallback produces explicit stage results and degradation metadata.
+Cache I/O retries use the saved retry budget and delay; exhausted `LLMCacheError`
+is fatal in every stage and never triggers another provider call as a write retry.
 A phase may finish with `status=completed` and nonempty `degraded_task_ids`;
 `degraded_reasons` records why. Confirmed prior candidate writes survive a later
 candidate failure, while remaining work is recorded as skipped. Missing logging,

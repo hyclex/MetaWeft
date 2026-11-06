@@ -68,6 +68,16 @@ output receives no additional model repair call. These limits are not inherited
 from ReMe's much larger retry loop. Record the settings and every physical attempt
 so comparisons include retry and memory costs.
 
+Successful chat and embedding responses populate a shared exact-request cache.
+The default `no_cache` mode makes fresh calls; `cache` opts into unlimited-age
+reuse and `timed_cache` accepts responses younger than 30 minutes. Preserve the
+resolved mode/path with every run and match modes when comparing designs. Hits
+reuse the previous sample even at nonzero temperature and are recorded separately
+from physical provider usage. Cache I/O retries use the same budget and delay;
+exhaustion raises fatal `LLMCacheError`, preserving pending successful responses
+for recovery without repeating the paid call during a cache-write retry. See
+the [LLM service design](service/llm/DESIGNS.md#persistent-response-reuse).
+
 Provider-call exceptions, empty chat responses, and invalid embedding responses
 are retried. Exhaustion propagates `LLMUnavailableError` from every stage and stops
 the stream without committing the unfinished task. Recovery restores memory from

@@ -16,7 +16,7 @@ ideas are not additional implementation requirements.
 
 | Location | Responsibility |
 | --- | --- |
-| `service/llm/` | Provider calls, embeddings, bounded retries, and an injected call recorder. |
+| `service/llm/` | Provider calls, embeddings, persistent response caching, bounded retries, and an injected call recorder. |
 | `service/elasticsearch/` | Storage, retrieval primitives, confirmed writes, and complete exports. |
 | `src/base/` | The reference memory representation and retrieve/adapt/reflect/consolidate policy. |
 | `src/memory_retrieval/` | Shared query generation, vector search, RRF fusion, presets, and retrieval traces. |
@@ -51,6 +51,15 @@ and canonical LLM logger from the sibling checkout. Every invocation preserves
 the relevant working source and resolved configuration and executes workers from
 that snapshot. This framework is not independent of that checkout. Mutable state,
 caches, logs, and outputs belong under `raw_logs/`, never under source directories.
+
+LLM calls default to `no_cache`: make fresh calls and store successful responses.
+For repeated design tests, set `METAWEFT_LLM_CACHE_MODE=cache` to reuse exact
+requests, or `timed_cache` to reuse responses younger than 30 minutes. Chat and
+embeddings share `raw_logs/.cache/metaweft/llm.sqlite3`; override the database with
+`METAWEFT_LLM_CACHE_PATH`. Launchers preserve the resolved settings for recovery.
+Only the response store is shared; task state and procedural memory remain
+isolated. See the [cache API](service/llm/README.md#response-cache) for precedence,
+accounting, and cache-failure recovery.
 
 Provider calls default to five retries after the initial attempt, waiting 60
 seconds between attempts. Configure new runs in `service/llm/retry.json`.

@@ -25,7 +25,7 @@ from MetaWeft.experiment.recovery import (
     RECOVERY_VERSION, add_recovery_argument, clone_run, recovery_lock, recovery_plan,
     seal_run, select_parent, selection, write_json,
 )
-from MetaWeft.service.llm.config import retry_defaults
+from MetaWeft.service.llm.config import cache_settings, retry_defaults
 from MetaWeft.src.memory_retrieval import load_preset
 
 
@@ -48,6 +48,8 @@ def parse_args(setting, argv=None):
     subset.add_argument("--task-id")
     parser.add_argument("--env-file", type=Path, default=PROVIDER_FILE)
     parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--cache-mode", choices=("no_cache", "cache", "timed_cache"))
+    parser.add_argument("--cache-path", type=Path)
     parser.add_argument("--note", default="")
     parser.add_argument("--dry-run", action="store_true")
     add_recovery_argument(parser)
@@ -80,7 +82,8 @@ def make_plan(setting, args):
             "output_directory": str(root / "experiments/outputs" / split),
             "adapt": setting == "base", "status": "planned",
         })
-    settings = {**SETTINGS, **retry_defaults()}
+    settings = {**SETTINGS, **retry_defaults(),
+                **cache_settings(args.cache_mode, args.cache_path, workspace=WORKSPACE)}
     if setting == "base":
         settings["retrieval_meta"] = load_preset("base", num_candidates=settings["retrieval_candidates"])
     return {
@@ -168,6 +171,12 @@ def worker_environment(plan):
 
 
 def check_recovery_options(parent, args):
+    if args.cache_mode is not None and args.cache_mode != parent["settings"].get("cache_mode"):
+        raise ValueError("--cache-mode conflicts with the saved run")
+    if args.cache_path is not None:
+        cache_path = cache_settings(cache_path=args.cache_path, workspace=WORKSPACE)["cache_path"]
+        if cache_path != parent["settings"].get("cache_path"):
+            raise ValueError("--cache-path conflicts with the saved run")
     if args.data_root and args.data_root.resolve() != Path(parent["data_source"]).resolve():
         raise ValueError("--data-root conflicts with the saved run")
     runtime = parent["runtime"]

@@ -22,7 +22,8 @@ from MetaWeft.experiment.appworld.executor import execute
 from MetaWeft.experiment.recovery import (
     accounting, commit_checkpoint, load_checkpoint, read_json, relative_file, restore_memory, write_json,
 )
-from MetaWeft.service.llm import LLMUnavailableError, ModelClient
+from MetaWeft.service.llm import LLMCacheError, LLMUnavailableError, ModelClient
+from MetaWeft.service.llm.cache import restore_pending_responses
 
 
 class SafeEmbeddingSerializer(EmbeddingSerializer):
@@ -43,17 +44,18 @@ def now():
 
 
 def physical_recorder(logger, call_refs=None):
-    def record(operation, request, invoke, *, phase, component, logical_call_id, attempt, step):
+    def record(operation, request, invoke, *, phase, component, logical_call_id, attempt, step, cache=None):
         physical_call_id = uuid.uuid4().hex
         if call_refs is not None:
             call_refs.setdefault(component, []).append({
                 "logical_call_id": logical_call_id, "physical_call_id": physical_call_id, "attempt": attempt,
+                **({"cache": cache} if cache is not None else {}),
             })
         return logger.invoke(
             provider_call=invoke, request=request,
             context=LLMCallContext(phase=phase, component=component, logical_call_id=logical_call_id,
                                    physical_call_id=physical_call_id, attempt=attempt, step=step,
-                                   episode_kind="primary"),
+                                   episode_kind="primary", metadata={"cache": cache} if cache is not None else {}),
             serializer=SafeEmbeddingSerializer() if operation in ("embed", "embedding", "embeddings") else OpenAISerializer(),
         )
     return record
@@ -128,6 +130,9 @@ class MetaWeftAdapter:
                             retry_delay_seconds=self.plan["settings"]["retry_delay_seconds"],
                             chat_timeout=self.plan["settings"]["chat_timeout"],
                             embedding_timeout=self.plan["settings"]["embedding_timeout"],
+                            cache_mode=self.plan["settings"]["cache_mode"],
+                            cache_path=self.plan["settings"]["cache_path"],
+                            cache_recovery_dir=artifacts / "llm_cache_pending",
                             recorder=physical_recorder(services.llm, call_refs))
         stages = {}
         degraded = []
@@ -227,6 +232,12 @@ def main():
     artifacts.mkdir(parents=True, exist_ok=bool(plan.get("recovery")))
     store = None
     try:
+        if plan.get("recovery"):
+            restore_pending_responses(
+                output, cache_path=plan["settings"]["cache_path"],
+                max_retries=plan["settings"]["max_retries"],
+                retry_delay_seconds=plan["settings"]["retry_delay_seconds"],
+            )
         actual = [ref.task_id for ref in load_task_stream(phase["dataset"])]
         if actual != phase["ordered_task_ids"]:
             raise ValueError("Official loader changed task order")
@@ -301,6 +312,11 @@ def main():
         if isinstance(error, LLMUnavailableError):
             failure.update(kind="provider_unavailable", phase=error.phase, operation=error.operation,
                            logical_call_id=error.logical_call_id, attempts=error.attempts)
+        elif isinstance(error, LLMCacheError):
+            failure.update(kind="cache_unavailable", phase=error.phase, operation=error.operation,
+                           cache_key=error.key, attempts=error.attempts,
+                           pending_response_path=str(error.pending_response_path)
+                           if error.pending_response_path is not None else None)
         failure = redact_secrets(failure)
         manifest.update(status="failed", error_type=type(error).__name__, failure=failure)
         write_json(output / "failure.json", failure)

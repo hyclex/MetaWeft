@@ -26,7 +26,7 @@ from appworld_experiments.code.common.task_loader import TaskRef
 
 from MetaWeft.experiment import recovery
 from MetaWeft.experiment.appworld import launch, worker
-from MetaWeft.service.llm import LLMUnavailableError, ModelClient
+from MetaWeft.service.llm import LLMCacheError, LLMUnavailableError, ModelClient
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -131,6 +131,8 @@ class RecoveryTests(unittest.TestCase):
             "provider": {"chat_base_url": "https://provider.invalid/v1"}, "runtime": self.runtime,
             "data_source": str(self.data), "es_url": None, "es_binary": self.runtime["es_binary"],
             "settings": {**launch.SETTINGS, "max_retries": 1, "retry_delay_seconds": 0,
+                         "cache_mode": "no_cache", "cache_path": str(self.workspace / "llm.sqlite3"),
+                         "cache_ttl_seconds": 1800,
                          "embedding_dimensions": 2, "max_interactions": 1},
             "recovery_version": recovery.RECOVERY_VERSION,
             "selection": {"setting": setting, "dataset": "2h", "split": split, "limit": None, "task_id": None},
@@ -393,6 +395,33 @@ class RecoveryTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual((calls, opened), ([], []))
         self.assertEqual(child["status"], "completed")
+
+    def test_pending_cache_restore_failure_stops_before_model_calls_and_preserves_checkpoint(self):
+        parent = self.make_run()
+        self.run_worker(parent, fail_task="b_1")
+        child = self.child(parent)
+        failure = LLMCacheError(operation="write", phase="recovery", key="pending", attempts=2,
+                                cause=OSError("cache unavailable"))
+        with patch.object(worker, "restore_pending_responses", side_effect=failure) as restore:
+            error, calls, opened, _ = self.run_worker(child)
+        self.assertIs(error, failure)
+        self.assertEqual((calls, opened), ([], []))
+        output = Path(child["phases"][0]["output_directory"])
+        restore.assert_called_once_with(output, cache_path=child["settings"]["cache_path"],
+                                        max_retries=1, retry_delay_seconds=0)
+        self.assertEqual(recovery.read_json(output / "checkpoint.json")["completed_task_ids"], ["a_1"])
+        recorded = recovery.read_json(output / "failure.json")
+        self.assertEqual(recorded["kind"], "cache_unavailable")
+        self.assertEqual(recorded["cache_key"], "pending")
+
+    def test_recovery_rejects_cache_overrides_and_preserves_saved_policy(self):
+        parent = self.make_run()
+        for option, value in (("--cache-mode", "timed_cache"), ("--cache-path", str(self.workspace / "other.sqlite3"))):
+            args = launch.parse_args("direct", ["--dataset", "2h", option, value])
+            with self.subTest(option=option), self.assertRaisesRegex(ValueError, "conflicts with the saved run"):
+                launch.check_recovery_options(parent, args)
+        child = self.child(parent)
+        self.assertEqual(child["settings"], parent["settings"])
 
     def test_checkpoint_remains_valid_when_manifest_write_was_interrupted(self):
         parent = self.make_run()

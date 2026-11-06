@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
@@ -42,6 +43,25 @@ class LaunchTests(unittest.TestCase):
             self.assertTrue(plan["partial"])
             self.assertNotEqual(plan["run_id"], launch.make_plan(setting, args)["run_id"])
         self.assertEqual(selected, [["ff58e36_1", "ff58e36_2"]] * 2)
+
+    def test_cache_settings_are_shared_across_run_ids_and_accept_explicit_modes(self):
+        with TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
+            root = Path(temporary)
+            with patch.object(launch, "WORKSPACE", root):
+                args = launch.parse_args("direct", ["--dataset", "2h", "--limit", "1"])
+                first = launch.make_plan("direct", args)
+                second = launch.make_plan("direct", args)
+                self.assertNotEqual(first["run_directory"], second["run_directory"])
+                self.assertEqual(first["settings"]["cache_path"], second["settings"]["cache_path"])
+                self.assertEqual(first["settings"]["cache_mode"], "no_cache")
+                self.assertEqual(first["settings"]["cache_ttl_seconds"], 1800)
+                for mode in ("no_cache", "cache", "timed_cache"):
+                    args = launch.parse_args("direct", ["--dataset", "2h", "--cache-mode", mode,
+                                                        "--cache-path", str(root / "shared.sqlite3")])
+                    settings = launch.make_plan("direct", args)["settings"]
+                    self.assertEqual(settings["cache_mode"], mode)
+                    self.assertEqual(settings["cache_path"], str(root / "shared.sqlite3"))
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_base_snapshots_resolved_retrieval_preset_without_new_live_settings(self):
         for setting in ("base", "direct"):
