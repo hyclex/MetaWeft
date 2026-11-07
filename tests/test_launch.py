@@ -63,7 +63,7 @@ class LaunchTests(unittest.TestCase):
                     self.assertEqual(settings["cache_path"], str(root / "shared.sqlite3"))
             self.assertEqual(list(root.iterdir()), [])
 
-    def test_base_snapshots_resolved_retrieval_preset_without_new_live_settings(self):
+    def test_base_and_direct_keep_original_retrieval_settings(self):
         for setting in ("base", "direct"):
             args = launch.parse_args(setting, ["--dataset", "2h", "--limit", "2"])
             settings = launch.make_plan(setting, args)["settings"]
@@ -74,6 +74,59 @@ class LaunchTests(unittest.TestCase):
                 self.assertEqual(meta["search"]["num_candidates"], settings["retrieval_candidates"])
             else:
                 self.assertNotIn("retrieval_meta", settings)
+
+    def test_all_compatible_presets_keep_controls_and_have_distinct_families(self):
+        families = set()
+        for preset in launch.RETRIEVAL_PRESETS:
+            with self.subTest(preset=preset):
+                args = launch.parse_args("retrieval", ["--preset", preset, "--dataset", "2h",
+                                                       "--limit", "2", "--note", "annotation"])
+                plan = launch.make_plan(args.preset, args)
+                self.assertEqual(plan["setting"], preset)
+                self.assertEqual(plan["selection"]["setting"], preset)
+                self.assertEqual(plan["scenario"], "cold-start")
+                self.assertEqual(plan["settings"]["retrieval_meta"], launch.load_preset(preset))
+                self.assertEqual(plan["settings"]["retrieval_k"], 5)
+                self.assertTrue(plan["note"].endswith("annotation"))
+                self.assertEqual(plan["phases"][0]["ordered_task_ids"], ["ff58e36_1", "ff58e36_2"])
+                self.assertEqual([p["split"] for p in plan["phases"]], ["test-normal", "test-challenge"])
+                self.assertTrue(all(p["adapt"] for p in plan["phases"]))
+                self.assertNotEqual(plan["phases"][0]["output_directory"], plan["phases"][1]["output_directory"])
+                self.assertNotEqual(plan["run_id"], launch.make_plan(args.preset, args)["run_id"])
+                families.add(Path(plan["run_directory"]).parent)
+        self.assertEqual(len(families), len(launch.RETRIEVAL_PRESETS))
+
+    def test_retrieval_shell_dry_runs_need_no_runtime_credentials_or_writes(self):
+        raw = ROOT / "raw_logs"
+        before = sorted(str(p) for p in raw.glob("metaweft-*/experiment/output/*"))
+        environment = {**os.environ, "APPWORLD_RUNTIME_PROFILE": "/nonexistent-metaweft-profile"}
+        environment.pop("OPENAI_API_KEY", None)
+        for preset in launch.RETRIEVAL_PRESETS:
+            result = subprocess.run(
+                ["bash", str(ENTRY / "run.sh"), "retrieval", "--preset", preset,
+                 "--dataset", "2h", "--split", "test-normal", "--limit", "2", "--dry-run"],
+                cwd=ROOT, env=environment, check=True, capture_output=True, text=True)
+            self.assertEqual(json.loads(result.stdout)["setting"], preset)
+        for options in ([], ["--preset", "setting_1"], ["--preset", "direct"]):
+            result = subprocess.run(
+                ["bash", str(ENTRY / "run.sh"), "retrieval", "--dataset", "2h", "--dry-run", *options],
+                cwd=ROOT, env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+        self.assertEqual(before, sorted(str(p) for p in raw.glob("metaweft-*/experiment/output/*")))
+
+    def test_retrieval_notes_describe_resolved_controls_and_base_alias_is_unchanged(self):
+        for preset, depth, candidates in (("transferability_3", 225, 450), ("efficiency_1", 20, 40)):
+            args = launch.parse_args("retrieval", ["--preset", preset, "--dataset", "2h", "--note", "custom"])
+            plan = launch.make_plan(preset, args)
+            self.assertIn(f"{preset}: HNSW depth={depth}; ANN candidates={candidates}", plan["note"])
+            self.assertIn("top 5 to adaptation; custom", plan["note"])
+            if preset == "transferability_3":
+                self.assertIn("qwen3.8-max-0902 listwise -> 20 (no thinking)", plan["note"])
+                self.assertIn("qwen3.8-flash scores -> all (thinking)", plan["note"])
+        base = launch.make_plan("base", launch.parse_args("base", ["--dataset", "2h"]))
+        alias = launch.make_plan("base", launch.parse_args("retrieval", ["--preset", "base", "--dataset", "2h"]))
+        for field in ("settings", "selection", "variant_id", "setting_id", "note"):
+            self.assertEqual(base[field], alias[field])
 
     def test_test_all_keeps_separate_ordered_phases(self):
         args = launch.parse_args("base", ["--dataset", "2h", "--limit", "1"])

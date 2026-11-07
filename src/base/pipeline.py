@@ -127,9 +127,16 @@ class BasePipeline:
         self.retrieval_k = retrieval_k
         self.retrieval_meta = deepcopy(retrieval_meta) if retrieval_meta is not None else load_preset("base")
         validate_meta(self.retrieval_meta, k=self.retrieval_k)
-        base_meta = load_preset("base")
-        if (self.retrieval_meta["query_generation"] != base_meta["query_generation"]
-                or self.retrieval_meta["search"]["routes"] != base_meta["search"]["routes"]):
+        branches = self.retrieval_meta["query_generation"]["branches"]
+        routes = self.retrieval_meta["search"]["routes"]
+        if self.retrieval_meta["schema_version"] == 1:
+            base_meta = load_preset("base")
+            supported = (self.retrieval_meta["query_generation"] == base_meta["query_generation"]
+                         and routes == base_meta["search"]["routes"])
+        else:
+            supported = (len(branches) == 1 and branches[0]["method"] == "identity" and len(routes) == 1
+                         and routes[0] == {"branch": branches[0]["id"], "representation": "combined"})
+        if not supported:
             raise ValueError("Live base supports only identity retrieval over combined memory; "
                              "evaluate expanded presets with the retrieval-only runner")
 
@@ -162,14 +169,18 @@ class BasePipeline:
         except (KeyError, TypeError) as error:
             raise StageFailure("Memory search returned invalid records") from error
 
-    def prepare_context(self, task_spec, *, llm, artifacts, trace_context=None, call_refs=None):
+    def prepare_context(self, task_spec, *, llm, artifacts, trace_context=None, call_refs=None,
+                        retrieval_llm=None):
         artifacts = Path(artifacts)
         saved_trace = {}
 
         def record_trace(trace):
             nonlocal saved_trace
             saved_trace = deepcopy(trace)
-            saved_trace.update(deepcopy(trace_context or {}))
+            context = deepcopy(trace_context or {})
+            if saved_trace["schema_version"] == 2 and "bank" in context:
+                saved_trace["bank"]["descriptor"] = context.pop("bank")
+            saved_trace.update(context)
             references = deepcopy(call_refs or {})
             saved_trace["call_references"] = references
             for query in saved_trace.get("queries", []):
@@ -180,13 +191,17 @@ class BasePipeline:
                 generation["calls"] = references.get(generation.get("component"), [])
             if saved_trace.get("embedding"):
                 saved_trace["embedding"]["calls"] = references.get(saved_trace["embedding"].get("component"), [])
+            for stage in saved_trace.get("reranking", []):
+                for attempt in stage.get("attempts", []):
+                    attempt["calls"] = references.get(attempt.get("component"), [])
             error = saved_trace.get("error")
             _write(artifacts / "retrieval.json", {
                 "records": [], "status": saved_trace["status"],
                 "error": error["message"] if error else None, "trace": saved_trace,
             })
 
-        retrieval = retrieve(task_spec["instruction"], self.retrieval_k, store=self.store, llm=llm,
+        retrieval = retrieve(task_spec["instruction"], self.retrieval_k, store=self.store,
+                             llm=retrieval_llm if retrieval_llm is not None else llm,
                              meta=self.retrieval_meta, record_trace=record_trace)
         if any("source_refs" not in record for record in retrieval.records):
             # The shared API permits memories without evidence references, but
@@ -197,13 +212,14 @@ class BasePipeline:
                                "message": "Memory search returned invalid records: missing source_refs"}
             record_trace({**saved_trace, "status": retrieval.status, "error": retrieval.error})
         retrieved = retrieval.records
-        result = ContextResult(status=retrieval.status, degraded=retrieval.status == "degraded",
+        result = ContextResult(status=retrieval.status,
+                               degraded=retrieval.status in {"degraded", "completed_with_fallback"},
                                error=retrieval.error["message"] if retrieval.error else None,
                                retrieved_ids=[record["id"] for record in retrieved])
         _write(artifacts / "retrieval.json", {"records": [_memory_view(r) for r in retrieved],
                                              "status": result.status, "error": result.error,
                                              "trace": saved_trace})
-        if retrieved and not result.degraded:
+        if retrieved and retrieval.status in {"completed", "completed_with_fallback"}:
             try:
                 value = self._chat(llm, "adaptation", {
                     "task_spec": {key: task_spec[key] for key in

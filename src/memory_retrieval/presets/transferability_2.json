@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "name": "transferability_2",
+  "description": "Transfer priority 2: HNSW top 80 and Flash selects 20.",
+  "query_generation": {
+    "branches": [
+      {
+        "id": "identity",
+        "method": "identity"
+      }
+    ]
+  },
+  "search": {
+    "backend": "hnsw",
+    "depth": 80,
+    "num_candidates": 160,
+    "max_bank_size": null,
+    "routes": [
+      {
+        "branch": "identity",
+        "representation": "combined"
+      }
+    ]
+  },
+  "fusion": {
+    "method": "rrf",
+    "rank_constant": 20,
+    "candidate_limit": 80
+  },
+  "reranking": {
+    "stages": [
+      {
+        "id": "select",
+        "method": "listwise",
+        "prompt": "procedure_listwise20_v1",
+        "model": "qwen3.8-flash",
+        "fields": [
+          "when_to_use",
+          "content"
+        ],
+        "output_limit": 20,
+        "small_input_policy": "bypass",
+        "generation": {
+          "temperature": 0,
+          "seed": 0,
+          "enable_thinking": false,
+          "thinking_budget": null,
+          "max_tokens": 512,
+          "max_completion_tokens": null
+        },
+        "response": {
+          "accept_wrapped": true,
+          "repair_duplicates": true,
+          "schema_retries": 1,
+          "fallback_to_input": true,
+          "fallback_on_empty_response": false
+        }
+      }
+    ]
+  },
+  "provider_policy": {
+    "max_retries": 2,
+    "retry_delay_seconds": 60
+  }
+}

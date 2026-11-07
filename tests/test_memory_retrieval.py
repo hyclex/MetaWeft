@@ -355,6 +355,8 @@ class ConfigurationAndFusionTests(unittest.TestCase):
     def test_presets_and_representation_metadata(self):
         from evaluations.appworld_mem_retrieval.tool.common import EMBEDDING_INPUTS
         for name in PRESETS:
+            if load_preset(name)["schema_version"] != 1:
+                continue
             meta = load_preset(name, num_candidates=40)
             self.assertEqual(validate_meta(meta, k=20), meta)
         for definition in REPRESENTATIONS.values():

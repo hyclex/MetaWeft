@@ -85,3 +85,55 @@ dry runs use temporary new-format fixtures and make no writes or provider calls.
 Historical live runs above retain their original protocol and artifacts; they
 were not migrated or rerun. This extension has not been exercised in a paid live
 experiment and does not detect provider model substitution.
+
+## Shared retrieval entrypoint validation (2026-11-06)
+
+The new `retrieval --preset NAME` entrypoint completed one fresh `no_cache` run
+per requested preset on `ff58e36_1`, then `ff58e36_2`. Both runs completed **2/21**
+Quick2h normal tasks, with 100% selected-task TGC and SGC, zero degraded tasks,
+and zero recorded evidence gaps. Subset SGC is not a complete-scenario result;
+these smoke tests establish integration, not improved end-to-end performance.
+
+| Preset / saved run | Task rewards | Execution steps | Memory counts: initial / task 1 / task 2 | Physical calls | Reported total tokens |
+| --- | --- | --- | --- | --- | --- |
+| [transferability_3](../../../raw_logs/metaweft-transferability_3-2h/experiment/output/20261106T220741Z_test-normal_0e3a18de/run_manifest.json) | 1.0, 1.0 | 20, 21 | 0 / 2 / 4 | 54 | 324,666 |
+| [efficiency_1](../../../raw_logs/metaweft-efficiency_1-2h/experiment/output/20261106T220745Z_test-normal_226cf521/run_manifest.json) | 1.0, 1.0 | 17, 19 | 0 / 1 / 1 | 49 | 286,176 |
+
+On task two, transferability retrieved and graded two learned memories, then
+produced 799 characters of adapted guidance. Efficiency retrieved one learned
+memory and produced 651 characters of guidance. Both listwise selectors correctly
+bypassed inputs smaller than 20. Thus the live runs exercised empty-bank behavior,
+updates, nonempty retrieval, adaptation and transferability's grader; they did
+not exercise the Max shortlist or efficiency's Flash listwise call.
+
+Accounting includes all stages, with no cache hits or inherited attempts:
+
+| Preset | Retrieval | Adaptation | Execution | Reflection | Consolidation |
+| --- | --- | --- | --- | --- | --- |
+| transferability_3 | 2 | 1 | 41 | 2 | 8 |
+| efficiency_1 | 1 | 1 | 36 | 2 | 9 |
+
+Counts are physical chat/embedding calls. Both accounting records report
+`missing_usage_calls=0`; dollar cost remains unknown because provider rates were
+not verified. Full records are preserved for
+[transferability](../../../raw_logs/metaweft-transferability_3-2h/experiment/output/20261106T220741Z_test-normal_0e3a18de/experiments/outputs/test-normal/accounting.json)
+and [efficiency](../../../raw_logs/metaweft-efficiency_1-2h/experiment/output/20261106T220745Z_test-normal_226cf521/experiments/outputs/test-normal/accounting.json).
+
+The prepared runtime passed **211 offline framework tests**. New cases cover
+all 11 compatible preset selections, unsupported-preset rejection, unchanged base
+alias controls, actual worker ranking with synthetic 20/225-memory banks,
+separate retrieval retries, call attribution, fallback degradation, fatal outages,
+client cleanup, exact-control capacity, committed-memory recovery and preset
+selection boundaries. Collector fixtures verify automatic/custom notes without
+changing the report schema. All 54 documented background commands passed shell
+syntax checks; all 18 fresh-launch combinations passed dry runs without creating
+run directories or making provider calls.
+
+Post-run checks verified each run's 530 captured framework/sibling source files,
+sealed identity, composed descriptor and unchanged preset configuration, final
+checkpoint hashes, exact evaluation coverage, full memory vectors and source
+references, prior-memory hashes in retrieval traces, canonical ranking-call
+references and accounting totals. The [generated Quick2h report](../../../res/appworld_2h.md)
+is collected from these raw artifacts and retains their saved design notes.
+No full benchmark or live recovery run was performed; recovery behavior was
+verified with offline failure/restart fixtures.

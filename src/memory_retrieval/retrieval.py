@@ -1,4 +1,4 @@
-"""One read-only retrieval call: query generation, search, and flat rank fusion."""
+"""Read-only retrieval with query generation, candidate fusion and optional ranking."""
 
 from copy import deepcopy
 from dataclasses import dataclass
@@ -8,6 +8,7 @@ import time
 
 from MetaWeft.service.elasticsearch import StoreSearchError
 from .config import REPRESENTATIONS, prompt_manifest, validate_meta
+from .reranking import RankingFailure, run_stage
 
 
 @dataclass
@@ -155,10 +156,15 @@ def retrieve(task, k, *, store, llm, meta, record_trace):
     meta = validate_meta(meta, k=k)
     if not callable(record_trace):
         raise ValueError("record_trace must be callable")
+    version = meta["schema_version"]
+    if version == 2:
+        for field, expected in meta["provider_policy"].items():
+            if getattr(llm, field, None) != expected:
+                raise ValueError(f"Retrieval client {field} does not match provider_policy")
     prompts = prompt_manifest(meta)
     started = time.monotonic()
     trace = {
-        "schema_version": 1, "status": "running", "error": None,
+        "schema_version": version, "status": "running", "error": None,
         "task": task, "k": k, "meta": meta,
         "bank": None, "model_settings": None, "prompts": prompts,
         "queries": [], "generations": [], "embedding": None, "searches": [], "ranking": [],
@@ -166,6 +172,8 @@ def retrieve(task, k, *, store, llm, meta, record_trace):
                      "completed_searches": 0, "empty_bank_probe": None, "skipped_searches": []},
         "timing": {"elapsed_seconds": 0.0},
     }
+    if version == 2:
+        trace.update(bank={"descriptor": None, "observed": {}}, fusion=None, reranking=[])
     recording = False
 
     def emit():
@@ -184,7 +192,7 @@ def retrieve(task, k, *, store, llm, meta, record_trace):
         original = error.__cause__ if isinstance(error.__cause__, StoreSearchError) else error
         detail = {"stage": trace["progress"]["stage"],
                   "type": type(original).__name__, "message": str(error)}
-        for entry in [*trace["generations"], *trace["searches"], trace["embedding"],
+        for entry in [*trace["generations"], *trace["searches"], *trace.get("reranking", []), trace["embedding"],
                       trace["progress"]["empty_bank_probe"]]:
             if entry is not None and entry.get("status") == "running":
                 entry.update(status="failed", error=detail)
@@ -197,6 +205,8 @@ def retrieve(task, k, *, store, llm, meta, record_trace):
         trace["progress"]["stage"] = "empty_bank_probe"
         probe = {"status": "running", "empty": None}
         trace["progress"]["empty_bank_probe"] = probe
+        if version == 2:
+            emit()
         probe_started = time.monotonic()
         hits = _hits(_query(store, {"size": 1, "query": {"match_all": {}}}))
         probe.update(status="completed", empty=not hits,
@@ -205,6 +215,28 @@ def retrieve(task, k, *, store, llm, meta, record_trace):
         if not hits:
             return finish("empty_memory")
         emit()
+
+        exact_bank = None
+        if version == 2 and meta["search"]["backend"] == "exact":
+            from .candidate_search import prepare_exact_bank
+
+            trace["progress"]["stage"] = "bank_export"
+            emit()
+            probe_id = hits[0].get("_id") if isinstance(hits[0], dict) else None
+            if not isinstance(probe_id, str) or not probe_id.strip():
+                raise ValueError("Exact bank probe requires a canonical memory ID")
+            try:
+                exact_bank = prepare_exact_bank(
+                    store, representations=list(dict.fromkeys(
+                        route["representation"] for route in meta["search"]["routes"])),
+                    dimensions=llm.dimensions, max_bank_size=meta["search"]["max_bank_size"],
+                    probe_id=probe_id, probe_source=hits[0].get("_source"),
+                )
+            except StoreSearchError as error:
+                raise RetrievalFailure(str(error)) from error
+            trace["bank"]["observed"] = exact_bank.observed
+            trace["progress"]["completed_stages"].append("bank_export")
+            emit()
 
         trace["progress"]["stage"] = "query_generation"
         stage_started = time.monotonic()
@@ -267,24 +299,43 @@ def retrieve(task, k, *, store, llm, meta, record_trace):
         trace["progress"]["stage"] = "search"
         stage_started = time.monotonic()
         records_by_id = {}
+        search_depth = meta["search"]["depth"] if version == 2 else k
+        if search_depth == "all":
+            search_depth = len(exact_bank.records)
         for identifier, route_index, route, query in scheduled:
             embedding_index = text_indices[query["text"]]
             result = {
                 "id": identifier, "route_id": f"route_{route_index}", "query_id": query["id"],
                 "branch_id": route["branch"], "representation": route["representation"],
                 "field": REPRESENTATIONS[route["representation"]]["field"],
-                "parameters": {"size": k, "k": k, "num_candidates": meta["search"]["num_candidates"]},
+                "parameters": {"size": search_depth, "k": search_depth,
+                               "num_candidates": meta["search"]["num_candidates"]},
                 "embedding_component": component, "embedding_index": embedding_index,
                 "status": "running", "candidates": [],
             }
+            if version == 2:
+                result.update(backend=meta["search"]["backend"], requested_depth=meta["search"]["depth"],
+                              effective_depth=search_depth)
             trace["searches"].append(result)
+            if version == 2:
+                emit()
             search_started = time.monotonic()
-            records, candidates = search(
-                store, vectors[embedding_index], representation=route["representation"],
-                k=k, num_candidates=meta["search"]["num_candidates"],
-            )
+            if exact_bank is not None:
+                from .candidate_search import exact_search
+
+                records, candidates = exact_search(
+                    exact_bank, vectors[embedding_index], representation=route["representation"],
+                    depth=search_depth,
+                )
+            else:
+                records, candidates = search(
+                    store, vectors[embedding_index], representation=route["representation"],
+                    k=search_depth, num_candidates=meta["search"]["num_candidates"],
+                )
             result.update(status="completed", candidates=candidates,
                           elapsed_seconds=time.monotonic() - search_started)
+            if version == 2:
+                result["effective_depth"] = len(candidates)
             for record in records:
                 records_by_id.setdefault(record["id"], record)
             trace["progress"]["completed_searches"] += 1
@@ -294,11 +345,42 @@ def retrieve(task, k, *, store, llm, meta, record_trace):
 
         trace["progress"]["stage"] = "fusion"
         stage_started = time.monotonic()
-        trace["ranking"] = fuse(trace["searches"], k=k, rank_constant=meta["fusion"]["rank_constant"])
+        fusion_limit = meta["fusion"]["candidate_limit"] if version == 2 else k
+        if fusion_limit == "all":
+            fusion_limit = len(exact_bank.records)
+        fused = fuse(trace["searches"], k=fusion_limit, rank_constant=meta["fusion"]["rank_constant"])
+        trace["ranking"] = fused
         trace["timing"]["fusion_seconds"] = time.monotonic() - stage_started
         trace["progress"]["completed_stages"].append("fusion")
-        return finish("completed", [records_by_id[item["id"]] for item in trace["ranking"]])
-    except RetrievalFailure as error:
+        records = [records_by_id[item["id"]] for item in fused]
+        if version == 1:
+            return finish("completed", records)
+        trace["fusion"] = {"candidate_limit": meta["fusion"]["candidate_limit"], "ranking": fused}
+        trace["ranking"] = []
+        emit()
+        fallback = None
+        for stage in meta["reranking"]["stages"]:
+            trace["progress"]["stage"] = f"reranking.{stage['id']}"
+            position = len(trace["reranking"])
+            trace["reranking"].append({})
+
+            def record_stage(value):
+                trace["reranking"][position] = value
+                emit()
+
+            records, stage_trace = run_stage(task, records, llm=llm, stage=stage,
+                                             prompt=prompts[stage["prompt"]]["text"],
+                                             record_stage=record_stage)
+            if stage_trace["status"] == "completed_with_fallback" and fallback is None:
+                fallback = {"stage": trace["progress"]["stage"], "type": "RankingFallback",
+                            "message": stage_trace["error"]["message"]}
+            trace["progress"]["completed_stages"].append(trace["progress"]["stage"])
+        records = records[:k]
+        trace["ranking"] = [{"id": record["id"], "rank": index + 1}
+                            for index, record in enumerate(records)]
+        trace["progress"]["stage"] = "completed"
+        return finish("completed_with_fallback" if fallback else "completed", records, fallback)
+    except (RetrievalFailure, RankingFailure) as error:
         if recording:
             raise
         return finish("degraded", error=mark_failure(error))

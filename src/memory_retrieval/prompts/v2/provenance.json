@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "prompts": {
+    "procedure_listwise20_v1": {
+      "source": "auto_explore/memory_retrieval_01/runner/ranking.py",
+      "constant": "RERANK_PROCEDURE",
+      "sha256": "7902048bc7106a5460d55325d4bc558ebcffa06087da87058e1bc3ab76271e80",
+      "source_sha256": "8476856e7b2c734b78aaf38fa81c776040ec7020dd4cb7c3c7e73416ed7adbd5"
+    },
+    "utility_scores_v1": {
+      "source": "auto_explore/memory_retrieval_01/runner/relevance_scores.py",
+      "constant": "SCORE_PROMPT",
+      "sha256": "b49f4a42df8c4aadca04d4826c11f28e71701019a267d7d4c5ff49740f3152f6",
+      "source_sha256": "f381e4c0ad87c8c78a063885931dff4958d29484392328d7b1c3a5040d89b7fb"
+    }
+  },
+  "schema_correction": {
+    "source": "auto_explore/memory_retrieval_01/runner/live.py",
+    "source_sha256": "21c05153c29131a0565f88f8d010ff5d56b0c0775d0dc1cdf6ac7ab97bb2d9e4",
+    "implementation": "reranking.py:SCHEMA_CORRECTION",
+    "policy": "Copy the exact non-score-vector correction message from the original else branch; at most one correction per stage."
+  }
+}

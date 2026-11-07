@@ -1,7 +1,7 @@
 # MetaWeft on AppWorld
 
-Use `run.sh` from the workspace root. It dispatches to thin `base.py` and
-`direct.py` entrypoints, each referencing its adjacent variant descriptor. See the
+Use `run.sh` from the workspace root. It dispatches to thin `base.py`,
+`direct.py`, and `retrieval.py` entrypoints, each referencing its adjacent variant descriptor. See the
 [command catalog](../README.md) for runnable check, smoke-test, and collection
 examples.
 
@@ -21,7 +21,7 @@ from `raw_logs/.runtime/providers/metaskill-appworld-origin.env`. Inherited valu
 take precedence. Use `--env-file` for another provider file; secrets are not copied
 into manifests. Preserve the declared model settings when comparing variants.
 
-`base` starts an isolated local Elasticsearch instance for each phase. `direct`
+`base` and the retrieval presets start an isolated local Elasticsearch instance for each phase. `direct`
 requires only the AppWorld runtime/data assets and does not start Elasticsearch,
 construct a memory store, or make embedding calls. Both use the existing prepared
 AppWorld Python interpreter, selected automatically by the launcher.
@@ -30,7 +30,8 @@ AppWorld Python interpreter, selected automatically by the launcher.
 
 | Option | Meaning |
 | --- | --- |
-| Positional setting | `base` or `direct`. |
+| Positional entrypoint | `base`, `direct`, or `retrieval`. |
+| `--preset NAME` | Required for `retrieval`: `base`, `performance_1..3`, `efficiency_1..3`, `transferability_1..3`, or `exact_base`. The preset becomes the run setting. |
 | `--dataset` | Required: `2h`, `8h`, or `full`, using the sibling dataset mapping. |
 | `--split` | `test-normal`, `test-challenge`, or `test-all` (default). |
 | `--limit N` | First N tasks per selected split; records partial coverage. |
@@ -41,9 +42,9 @@ AppWorld Python interpreter, selected automatically by the launcher.
 | `--cache-mode MODE` | `no_cache`, `cache`, or `timed_cache`; explicit option overrides `METAWEFT_LLM_CACHE_MODE`, then defaults to `no_cache`. |
 | `--cache-path PATH` | Shared response database; overrides `METAWEFT_LLM_CACHE_PATH`, then defaults to `raw_logs/.cache/metaweft/llm.sqlite3`. |
 | `--data-root PATH` | Existing downloaded AppWorld data directory accepted by the shared runtime rules. |
-| `--note TEXT` | Recorded annotation; it does not change the variant identity. |
+| `--note TEXT` | Recorded annotation; v2 presets prepend an automatic design description. Recovery preserves the saved description and replaces the annotation when supplied. Does not change variant identity. |
 
-Both settings use 40 executor interactions, one primary trial, `qwen3.8-flash` at
+All settings use 40 executor interactions, one primary trial, `qwen3.8-flash` at
 temperature `0.9`, model seed `0`, and thinking disabled. AppWorld's environment
 random seed is `100`. Base memory calls use
 temperature `0`; embeddings use `text-embedding-3-large`, 1024 dimensions. Provider
@@ -72,20 +73,31 @@ the retrieval limit consumed by the pipeline. The original task searches only
 the combined vector; one-list RRF preserves its order. Consolidation keeps its
 separate five-neighbor search and existing memory updates.
 
-The four expanded retrieval presets are available only through the
+`retrieval --preset NAME` changes only pre-task retrieval. All nine v2 category
+presets use unchanged candidate/ranking controls and return up to five memories
+to the base adaptation pipeline. A separate retrieval client uses the selected
+provider policy: two retries for `transferability_3`, five for `efficiency_1`, both
+with 60-second delays. Execution, adaptation and updates retain ordinary retry
+settings. Traces record both policies and canonical references to ranking calls.
+`retrieval --preset base` is an alias of the existing base setting.
+
+Cold-start memory evolves between tasks and resets per split. Listwise ranking
+bypasses banks below 20 memories; a configured grader still runs. `exact_base`
+uses exact whole-bank search and fails before paid retrieval calls above its
+declared capacity of 225; it does not evict memories or silently increase capacity.
+The expanded `setting_1..6` designs remain available only through the
 [retrieval benchmark](../../../evaluations/appworld_mem_retrieval/README.md).
-The live setting choices and recovery interface remain `base` and `direct`.
 
 ## Recovery
 
-Repeat the original setting, dataset, split, and `--limit`/`--task-id` selection
+Repeat the original entrypoint/preset, dataset, split, and `--limit`/`--task-id` selection
 with `--recover`. `--recover latest` selects the most recently failed compatible
 run; an explicit directory selects that parent. `--dry-run` reports the saved
 configuration, lineage, reused task IDs, and remaining IDs without writes or
 provider calls. Completed or active recovery lineages and pre-checkpoint runs
-are rejected. The `base.py`, `direct.py`, and `run.sh` entrypoints share this API.
+are rejected. The `base.py`, `direct.py`, `retrieval.py`, and `run.sh` entrypoints share this API.
 The [experiment command catalog](../README.md#recovery) lists `nohup` recovery
-commands for both settings, all three dataset sizes, and every test split, using
+commands for `transferability_3` and `efficiency_1`, all three dataset sizes, and every test split, using
 either the latest compatible failure or a specific parent directory. Its
 [fresh-run examples](../README.md#fresh-runs) cover the same combinations.
 
@@ -124,7 +136,7 @@ counted separately and do not add incurred tokens or charges.
 ## Outputs and interpretation
 
 ```text
-raw_logs/metaweft-<base|direct>-<2h|8h|full>/experiment/output/<UTC>_<split>_<id>/
+raw_logs/metaweft-<setting>-<2h|8h|full>/experiment/output/<UTC>_<split>_<id>/
   run_manifest.json
   variant.json
   resolved_settings.json

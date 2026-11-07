@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "name": "efficiency_1",
+  "description": "HNSW top 20, then Flash listwise ranking.",
+  "query_generation": {
+    "branches": [
+      {
+        "id": "identity",
+        "method": "identity"
+      }
+    ]
+  },
+  "search": {
+    "backend": "hnsw",
+    "depth": 20,
+    "num_candidates": 40,
+    "max_bank_size": null,
+    "routes": [
+      {
+        "branch": "identity",
+        "representation": "combined"
+      }
+    ]
+  },
+  "fusion": {
+    "method": "rrf",
+    "rank_constant": 20,
+    "candidate_limit": 20
+  },
+  "reranking": {
+    "stages": [
+      {
+        "id": "select",
+        "method": "listwise",
+        "prompt": "procedure_listwise20_v1",
+        "model": "qwen3.8-flash",
+        "fields": [
+          "when_to_use",
+          "content"
+        ],
+        "output_limit": 20,
+        "small_input_policy": "bypass",
+        "generation": {
+          "temperature": 0,
+          "seed": 0,
+          "enable_thinking": false,
+          "thinking_budget": null,
+          "max_tokens": 512,
+          "max_completion_tokens": null
+        },
+        "response": {
+          "accept_wrapped": false,
+          "repair_duplicates": true,
+          "schema_retries": 0,
+          "fallback_to_input": false,
+          "fallback_on_empty_response": false
+        }
+      }
+    ]
+  },
+  "provider_policy": {
+    "max_retries": 5,
+    "retry_delay_seconds": 60
+  }
+}

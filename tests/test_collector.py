@@ -25,7 +25,7 @@ class CollectorTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
 
     def add_run(self, baseline, *, setting="base", status="completed", scenario=None,
-                phase_diagnostics=None, evaluation=True):
+                phase_diagnostics=None, evaluation=True, note="fixture"):
         run = self.workspace / "raw_logs" / f"{baseline}-{setting}" / "experiment/output/run"
         # Saved absolute paths deliberately differ from the discovered location.
         original = Path("/original/workspace/raw_logs") / f"{baseline}-{setting}/experiment/output/run"
@@ -41,7 +41,7 @@ class CollectorTests(unittest.TestCase):
             phase["adapt"] = True
         invocation = {
             "baseline": baseline, "run_id": f"{baseline}-run", "run_directory": str(original),
-            "status": status, "setting": setting, "note": "fixture",
+            "status": status, "setting": setting, "note": note,
             "dataset_version": "2h",
             "scenario": scenario or ("online" if baseline == "ace" else "cold-start"),
             "phases": [phase],
@@ -109,6 +109,22 @@ class CollectorTests(unittest.TestCase):
         report, _ = self.collect()
         self.assertIn("| fixture | direct | direct | appworld |", report)
         self.assertIn("| 2 / 2 / 18 tasks; subset | Complete; degraded 0/2 tasks |", report)
+
+    def test_preset_settings_and_saved_automatic_notes_need_no_report_schema_change(self):
+        from html import escape
+        from MetaWeft.experiment.appworld import launch
+
+        notes = {}
+        for preset in ("transferability_3", "efficiency_1"):
+            args = launch.parse_args("retrieval", ["--preset", preset, "--dataset", "2h",
+                                                   "--note", "custom | annotation"])
+            notes[preset] = launch.make_plan(preset, args)["note"]
+            self.add_run("metaweft", setting=preset, note=notes[preset], phase_diagnostics={
+                "completed_task_ids": ["one_1", "two_1"], "degraded_task_ids": [],
+            })
+        report, _ = self.collect()
+        for preset, note in notes.items():
+            self.assertIn(f"| {escape(note).replace('|', '&#124;')} | {preset} | cold start |", report)
 
     def test_missing_diagnostics_stay_unknown_and_use_invocation_link(self):
         self.add_run("metaweft", evaluation=False)

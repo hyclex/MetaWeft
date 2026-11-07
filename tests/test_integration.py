@@ -331,18 +331,154 @@ class AdapterTests(unittest.TestCase):
         return SimpleNamespace(tracker=SimpleNamespace(pass_count=self.passed, fail_count=1-self.passed),
                                report="SECRET EVALUATOR ASSERTION")
 
-    def run_adapter(self, pipeline=None, store=None):
+    def run_adapter(self, pipeline=None, store=None, *, model_factory=None, initial_records=None):
         if not (self.output / "checkpoint.json").is_file():
             write_json(self.artifacts.parent / "memory_initial.json", {
-                "status": "verified" if self.plan["setting"] == "base" else "disabled", "records": []})
-            if self.plan["setting"] == "base":
+                "status": "disabled" if self.plan["setting"] == "direct" else "verified",
+                "records": initial_records or []})
+            if self.plan["setting"] != "direct":
                 write_json(self.artifacts.parent / "memory_mapping.json", {})
             commit_checkpoint(self.plan, self.phase, [])
         adapter = worker.MetaWeftAdapter(self.plan, self.phase, self.manifest, pipeline, store)
         with patch.dict(os.environ, {"OPENAI_API_KEY": "fake-for-offline-tests"}), \
-             patch.object(worker, "ModelClient", return_value=self.model), \
+             patch.object(worker, "ModelClient", side_effect=model_factory or (lambda **kwargs: self.model)), \
              patch.object(worker.CachedDBHandler, "reset", side_effect=lambda: self.events.append("cache_reset")):
             return adapter.run_task(self.context, self.services)
+
+    def ranked_adapter(self, preset, count, *, failure=None):
+        self.plan["setting"] = preset
+        meta = load_preset(preset)
+        self.plan["settings"].update(retrieval_meta=meta, retrieval_k=5)
+        records = [{"id": f"m{i:03d}", "document": {
+            "id": f"m{i:03d}", "when_to_use": "Example task", "content": f"Procedure {i}",
+            "source_refs": ["seed.json"], "embedding": [0.1, 0.2],
+        }} for i in range(count)]
+        store = Mock(index="offline-bank")
+        store.export.return_value = records
+        store.query.side_effect = lambda body: {"hits": {"hits": [
+            {"_id": row["id"], "_source": row["document"], "_score": 1.0}
+            for row in records[:body["size"]]]}}
+        pipeline = BasePipeline(store, self.root, retrieval_meta=meta)
+        self.transports, self.client_options, self.provider_requests = [], [], []
+
+        def make_model(**kwargs):
+            self.client_options.append(dict(kwargs))
+            if failure == "construct" and len(self.client_options) == 2:
+                raise RuntimeError("retrieval client construction failed")
+            active = {}
+            recorder = kwargs.pop("recorder")
+
+            def record(operation, request, invoke, **context):
+                active.update(context)
+                self.provider_requests.append((context["phase"], deepcopy(request)))
+                return recorder(operation, request, invoke, **context)
+
+            def chat(**request):
+                phase = active["phase"]
+                if phase == "retrieval":
+                    if failure == "provider":
+                        raise TimeoutError("ranking outage")
+                    payload = json.loads(request["messages"][1]["content"])
+                    size = len(payload["memories"])
+                    if "return_count" in payload:
+                        value = {"wrong": []} if failure == "schema" else {"ranking": list(range(size, size - 20, -1))}
+                    else:
+                        value = {"scores": [[i, 100 - i] for i in range(1, size + 1)]}
+                elif phase == "adaptation":
+                    value = {"guidance": "Use selected procedure"}
+                elif phase == "reflection":
+                    value = {"candidates": []}
+                else:
+                    value = None
+                content = json.dumps(value) if value is not None else "```python\nprint('ok')\n```"
+                result = response(content)
+                result.model_dump = lambda: {"choices": [{"message": {"content": content}}],
+                                             "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3}}
+                return result
+
+            provider = Mock()
+            provider.chat.completions.create.side_effect = chat
+            provider.embeddings.create.return_value = SimpleNamespace(
+                data=[SimpleNamespace(index=0, embedding=[0.1, 0.2])],
+                model_dump=lambda: {"data": [{"index": 0, "embedding": [0.1, 0.2]}],
+                                    "usage": {"prompt_tokens": 2, "total_tokens": 2}})
+            self.transports.append(provider)
+            return ModelClient(client=provider, recorder=record, sleep=Mock(), **kwargs)
+
+        return self.run_adapter(pipeline, store, model_factory=make_model, initial_records=records)
+
+    def test_transferability_worker_ranks_then_adapts_with_separate_policy_and_canonical_calls(self):
+        result = self.ranked_adapter("transferability_3", 225)
+        self.assertEqual(result.metadata["stages"]["context"]["retrieved_ids"],
+                         [f"m{i:03d}" for i in range(224, 219, -1)])
+        self.assertEqual([options["max_retries"] for options in self.client_options], [0, 2])
+        self.assertEqual([options["retry_delay_seconds"] for options in self.client_options], [0, 60])
+        for key in ("cache_path", "cache_mode", "cache_recovery_dir", "recorder"):
+            self.assertEqual(self.client_options[0][key], self.client_options[1][key])
+        trace = json.loads((self.artifacts / "retrieval.json").read_text())["trace"]
+        self.assertEqual([stage["input_count"] for stage in trace["reranking"]], [225, 20])
+        self.assertEqual(trace["model_settings"]["retrieval_provider_policy"]["max_retries"], 2)
+        rows = [json.loads(line) for line in self.logger.path.read_text().splitlines()]
+        ids = {row["id"] for row in rows}
+        for stage in trace["reranking"]:
+            self.assertTrue(stage["attempts"][0]["calls"])
+            self.assertTrue(all(call["physical_call_id"] in ids for call in stage["attempts"][0]["calls"]))
+        self.assertEqual(worker.accounting(self.output)["recorded_calls_by_phase"],
+                         {"retrieval": 3, "adaptation": 1, "execution": 1, "reflection": 1})
+        self.assertNotIn("SECRET", json.dumps(self.provider_requests))
+        for provider in self.transports:
+            provider.close.assert_called_once()
+
+    def test_efficiency_worker_runs_listwise_and_keeps_global_retry_controls(self):
+        result = self.ranked_adapter("efficiency_1", 20)
+        self.assertEqual(result.metadata["stages"]["context"]["retrieved_ids"],
+                         [f"m{i:03d}" for i in range(19, 14, -1)])
+        self.assertEqual([options["max_retries"] for options in self.client_options], [0, 5])
+        self.assertEqual(worker.accounting(self.output)["recorded_calls_by_phase"]["retrieval"], 2)
+        self.assertEqual(result.metadata["degraded"], [])
+        for provider in self.transports:
+            provider.close.assert_called_once()
+
+    def test_ranked_worker_empty_bank_avoids_retrieval_calls(self):
+        result = self.ranked_adapter("transferability_3", 0)
+        self.assertEqual(result.metadata["stages"]["context"]["status"], "empty_memory")
+        self.assertEqual([phase for phase, _ in self.provider_requests], ["execution", "reflection"])
+
+    def test_ranked_worker_small_bank_bypasses_selection_and_runs_grader(self):
+        self.ranked_adapter("transferability_3", 3)
+        trace = json.loads((self.artifacts / "retrieval.json").read_text())["trace"]
+        self.assertEqual([stage["status"] for stage in trace["reranking"]], ["skipped", "completed"])
+        self.assertEqual(worker.accounting(self.output)["recorded_calls_by_phase"]["retrieval"], 2)
+
+    def test_ranked_worker_adapts_usable_fallback_and_reports_degradation(self):
+        result = self.ranked_adapter("transferability_3", 20, failure="schema")
+        context = result.metadata["stages"]["context"]
+        self.assertEqual(context["status"], "completed_with_fallback")
+        self.assertTrue(context["degraded"])
+        self.assertEqual(context["guidance"], "Use selected procedure")
+        self.assertEqual(self.manifest["degraded_task_ids"], ["fake_1"])
+
+    def test_ranked_worker_provider_exhaustion_is_fatal_and_closes_both_clients(self):
+        with self.assertRaises(LLMUnavailableError) as raised:
+            self.ranked_adapter("transferability_3", 20, failure="provider")
+        self.assertEqual(raised.exception.attempts, 3)
+        self.assertEqual(self.manifest["completed_task_ids"], [])
+        self.assertNotIn("open", self.events)
+        for provider in self.transports:
+            provider.close.assert_called_once()
+
+    def test_retrieval_client_construction_failure_closes_ordinary_client(self):
+        with self.assertRaisesRegex(RuntimeError, "construction failed"):
+            self.ranked_adapter("transferability_3", 20, failure="construct")
+        self.transports[0].close.assert_called_once()
+        self.assertEqual(self.provider_requests, [])
+
+    def test_exact_control_capacity_is_enforced_before_provider_calls(self):
+        with self.assertRaisesRegex(ValueError, "capacity of 225"):
+            self.ranked_adapter("exact_base", 226)
+        self.assertEqual(self.provider_requests, [])
+        for provider in self.transports:
+            provider.close.assert_called_once()
 
     def test_direct_runs_only_execution_then_post_close_evaluation(self):
         result = self.run_adapter()

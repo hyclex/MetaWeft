@@ -19,7 +19,7 @@ ideas are not additional implementation requirements.
 | `service/llm/` | Provider calls, embeddings, persistent response caching, bounded retries, and an injected call recorder. |
 | `service/elasticsearch/` | Storage, retrieval primitives, confirmed writes, and complete exports. |
 | `src/base/` | The reference memory representation and retrieve/adapt/reflect/consolidate policy. |
-| `src/memory_retrieval/` | Shared query generation, vector search, RRF fusion, presets, and retrieval traces. |
+| `src/memory_retrieval/` | Shared query generation, HNSW/exact search, RRF fusion, optional ranking, versioned presets, and retrieval traces. |
 | `src/base/prompts/` | Explicit, versioned prompts owned by the baseline. |
 | `experiment/appworld/` | Thin setting entrypoints, AppWorld execution integration, run lifecycle, and adjacent variant descriptors. |
 | `tests/` | Offline behavior and reporting checks. |
@@ -77,12 +77,17 @@ original task searches the combined memory vector, and single-list RRF preserves
 the search order. Its resolved retrieval configuration is saved with each run.
 Consolidation retains its separate existing neighbor search and update policy.
 
-The framework also provides `setting_1` through `setting_4` for query expansion
-and representation comparisons. These are retrieval-only experimental presets;
-the live AppWorld settings remain `base` and `direct`. Use the single
-[retrieval benchmark runner](../evaluations/appworld_mem_retrieval/README.md) to
-select a preset, inspect its trace, or recover a failed retrieval run. Expanded
-live memory maintenance and setting wrappers await a later promotion decision.
+The framework also provides `setting_1` through `setting_6` for query expansion
+and representation comparisons, plus nine v2 category presets for candidate
+selection and utility ranking and a separate `exact_base` control. The shared
+`run.sh retrieval --preset NAME` entrypoint supports `base`, all nine v2 presets,
+and `exact_base` with the same evolving cold-start memory and final retrieval
+limit of five. Preset-specific settings and automatic notes distinguish reports
+and recovery families. `exact_base` retains its 225-memory capacity and fails
+above it. The expanded `setting_1..6` designs remain retrieval-only. Use the
+[retrieval benchmark runner](../evaluations/appworld_mem_retrieval/README.md) for
+frozen-bank evaluation; see the [command catalog](experiment/README.md) for
+end-to-end launches of `transferability_3` and `efficiency_1`.
 
 `base` starts empty for each test split, retrieves up to five memories, adapts them
 once, executes with fixed guidance, reflects on the trace and scalar reward, and

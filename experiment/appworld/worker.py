@@ -1,6 +1,6 @@
 """Execute one split from captured sources, with canonical AppWorld artifacts."""
 
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from datetime import datetime, timezone
 import json
 import os
@@ -103,7 +103,10 @@ class MetaWeftAdapter:
                                    "model": settings["embedding_model"],
                                    "dimensions": settings["embedding_dimensions"]},
             },
-            "model_settings": {**settings, "provider_base_url": self.plan["provider"]["chat_base_url"]},
+            "model_settings": {**settings, "provider_base_url": self.plan["provider"]["chat_base_url"],
+                               "retrieval_provider_policy": self.pipeline.retrieval_meta.get(
+                                   "provider_policy", {key: settings[key] for key in
+                                                       ("max_retries", "retry_delay_seconds")})},
             "prompts": prompt_manifest(self.pipeline.retrieval_meta),
         }
 
@@ -122,7 +125,7 @@ class MetaWeftAdapter:
         }
         write_json(artifacts / "task_spec.json", spec)
         call_refs = {}
-        model = ModelClient(api_key=os.environ["OPENAI_API_KEY"], base_url=self.plan["provider"]["chat_base_url"],
+        model_options = dict(api_key=os.environ["OPENAI_API_KEY"], base_url=self.plan["provider"]["chat_base_url"],
                             chat_model=self.plan["settings"]["chat_model"],
                             embedding_model=self.plan["settings"]["embedding_model"],
                             dimensions=self.plan["settings"]["embedding_dimensions"],
@@ -134,15 +137,23 @@ class MetaWeftAdapter:
                             cache_path=self.plan["settings"]["cache_path"],
                             cache_recovery_dir=artifacts / "llm_cache_pending",
                             recorder=physical_recorder(services.llm, call_refs))
+        model = ModelClient(**model_options)
+        clients = ExitStack()
+        clients.callback(model.close)
         stages = {}
         degraded = []
         sink = None
         try:
             guidance = ""
             if self.pipeline:
+                retrieval_model = model
+                if self.pipeline.retrieval_meta["schema_version"] == 2:
+                    retrieval_model = ModelClient(**{**model_options,
+                                                     **self.pipeline.retrieval_meta["provider_policy"]})
+                    clients.callback(retrieval_model.close)
                 prepared = self.pipeline.prepare_context(spec, llm=model, artifacts=artifacts,
                                                          trace_context=self.retrieval_trace_context(),
-                                                         call_refs=call_refs)
+                                                         call_refs=call_refs, retrieval_llm=retrieval_model)
                 guidance = prepared.guidance
                 stages["context"] = prepared.to_dict()
                 if prepared.degraded:
@@ -158,7 +169,8 @@ class MetaWeftAdapter:
                         trace_file.write(json.dumps(event, ensure_ascii=False) + "\n")
                         trace_file.flush()
                     trace = execute(spec, guidance, llm=model, environment=services.environment,
-                                    prompt=(self.prompts / f"execution_{self.plan['setting']}.txt").read_text(),
+                                    prompt=(self.prompts / ("execution_base.txt" if self.pipeline
+                                                            else "execution_direct.txt")).read_text(),
                                     max_interactions=self.plan["settings"]["max_interactions"], record_step=save_step)
                 completed = services.completion.task_completed()
             try:
@@ -207,9 +219,11 @@ class MetaWeftAdapter:
             print(f"Task {context.task_id}: reward={reward:.3f}, steps={len(trace)}, degraded={bool(degraded)}", flush=True)
             return BaselineTaskResult(metadata=result)
         finally:
-            model.close()
-            if sink is not None:
-                logger.remove(sink)
+            try:
+                clients.close()
+            finally:
+                if sink is not None:
+                    logger.remove(sink)
 
 
 def main():
@@ -241,7 +255,7 @@ def main():
         actual = [ref.task_id for ref in load_task_stream(phase["dataset"])]
         if actual != phase["ordered_task_ids"]:
             raise ValueError("Official loader changed task order")
-        if plan["setting"] == "base":
+        if plan["setting"] != "direct":
             from reme_runtime import elasticsearch
             service = elasticsearch(plan, artifacts)
         else:

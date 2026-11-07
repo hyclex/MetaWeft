@@ -1,0 +1,92 @@
+{
+  "schema_version": 2,
+  "name": "transferability_3",
+  "description": "Transfer priority 3: HNSW top 225, Max selects 20, then reasoning Flash grades.",
+  "query_generation": {
+    "branches": [
+      {
+        "id": "identity",
+        "method": "identity"
+      }
+    ]
+  },
+  "search": {
+    "backend": "hnsw",
+    "depth": 225,
+    "num_candidates": 450,
+    "max_bank_size": null,
+    "routes": [
+      {
+        "branch": "identity",
+        "representation": "combined"
+      }
+    ]
+  },
+  "fusion": {
+    "method": "rrf",
+    "rank_constant": 20,
+    "candidate_limit": 225
+  },
+  "reranking": {
+    "stages": [
+      {
+        "id": "select",
+        "method": "listwise",
+        "prompt": "procedure_listwise20_v1",
+        "model": "qwen3.8-max-0902",
+        "fields": [
+          "when_to_use",
+          "content"
+        ],
+        "output_limit": 20,
+        "small_input_policy": "bypass",
+        "generation": {
+          "temperature": 0,
+          "seed": 0,
+          "enable_thinking": false,
+          "thinking_budget": null,
+          "max_tokens": 512,
+          "max_completion_tokens": null
+        },
+        "response": {
+          "accept_wrapped": true,
+          "repair_duplicates": true,
+          "schema_retries": 1,
+          "fallback_to_input": true,
+          "fallback_on_empty_response": true
+        }
+      },
+      {
+        "id": "grade",
+        "method": "scores",
+        "prompt": "utility_scores_v1",
+        "model": "qwen3.8-flash",
+        "fields": [
+          "when_to_use",
+          "content"
+        ],
+        "output_limit": "all",
+        "small_input_policy": "run",
+        "generation": {
+          "temperature": 0,
+          "seed": 0,
+          "enable_thinking": true,
+          "thinking_budget": 2048,
+          "max_tokens": null,
+          "max_completion_tokens": 6144
+        },
+        "response": {
+          "accept_wrapped": true,
+          "repair_duplicates": false,
+          "schema_retries": 1,
+          "fallback_to_input": true,
+          "fallback_on_empty_response": true
+        }
+      }
+    ]
+  },
+  "provider_policy": {
+    "max_retries": 2,
+    "retry_delay_seconds": 60
+  }
+}

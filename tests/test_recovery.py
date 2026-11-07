@@ -124,7 +124,7 @@ class RecoveryTests(unittest.TestCase):
         plan = {
             "baseline": "metaweft", "setting": setting, "setting_id": f"metaweft-{setting}-2h",
             "variant_id": f"metaweft-{setting}-v1", "dataset_version": "2h", "split": split,
-            "scenario": "cold-start" if setting == "base" else "direct", "note": "offline",
+            "scenario": "direct" if setting == "direct" else "cold-start", "note": "offline",
             "run_directory": str(root), "run_id": f"{setting}-{tag}", "run_tag": tag,
             "created_at": "2026-01-01T00:00:00+00:00", "status": "failed", "phases": phases,
             "source_framework": str(root / "source/MetaWeft"), "source_project": str(root / "source/project"),
@@ -137,6 +137,9 @@ class RecoveryTests(unittest.TestCase):
             "recovery_version": recovery.RECOVERY_VERSION,
             "selection": {"setting": setting, "dataset": "2h", "split": split, "limit": None, "task_id": None},
         }
+        if setting not in ("base", "direct"):
+            plan["settings"]["retrieval_meta"] = launch.load_preset(setting)
+            plan["note"] = launch.retrieval_note(plan["settings"]) + "; offline"
         recovery.seal_run(plan)
         recovery.write_json(root / "run_manifest.json", plan)
         recovery.write_json(root / "resolved_settings.json", plan)
@@ -207,6 +210,10 @@ class RecoveryTests(unittest.TestCase):
                 elif stage == "reflection":
                     candidate = {"when_to_use": "For the example", "content": "Use observed procedure"}
                     content = json.dumps({"candidates": [candidate] * (2 if task_id == "b_1" else 1)})
+                elif stage == "retrieval":
+                    payload = json.loads(request["messages"][1]["content"])
+                    count = len(payload["memories"])
+                    content = json.dumps({"scores": [[i, 100] for i in range(1, count + 1)]})
                 else:
                     successful_decisions += 1
                     content = json.dumps({"operation": "add", "target_id": None, "when_to_use": None,
@@ -267,12 +274,12 @@ class RecoveryTests(unittest.TestCase):
         recovery.write_json(root / "run_manifest.json", child)
         return child
 
-    def test_both_settings_resume_prefix_and_restore_only_committed_memory(self):
-        for setting in ("direct", "base"):
+    def test_settings_resume_prefix_and_restore_only_committed_memory(self):
+        for setting in ("direct", "base", "transferability_3", "efficiency_1"):
             with self.subTest(setting=setting):
                 parent = self.make_run(setting)
                 error, calls, opened, stores = self.run_worker(
-                    parent, fail_task="b_1", fail_phase="consolidation" if setting == "base" else "execution")
+                    parent, fail_task="b_1", fail_phase="execution" if setting == "direct" else "consolidation")
                 self.assertIsInstance(error, LLMUnavailableError)
                 self.assertEqual(opened, ["a_1", "b_1"])
                 self.assertNotIn("c_1", [task for task, stage in calls])
@@ -291,7 +298,7 @@ class RecoveryTests(unittest.TestCase):
                 cost = recovery.read_json(output / "accounting.json")
                 self.assertEqual(cost["inherited"]["recorded_calls"], parent_cost["recorded_calls"])
                 self.assertEqual(cost["recorded_calls"], parent_cost["recorded_calls"] + cost["current_attempt"]["recorded_calls"])
-                if setting == "base":
+                if setting != "direct":
                     self.assertEqual(len(stores[0].records), 2)  # A and the unfinished B update.
                     original = recovery.read_json(Path(parent["phases"][0]["output_directory"]) /
                                                   "baseline_artifacts/metaweft/a_1/memory_after.json")
@@ -302,6 +309,29 @@ class RecoveryTests(unittest.TestCase):
                     for record in restored[0].records.values():
                         for reference in record["source_refs"]:
                             self.assertTrue((Path(child["run_directory"]) / reference).is_file())
+
+    def test_preset_recovery_selects_only_its_family_and_keeps_saved_controls_and_notes(self):
+        parent = self.make_run("transferability_3")
+        other = self.make_run("efficiency_1")
+        self.run_worker(parent, fail_task="b_1", fail_phase="retrieval")
+        self.assertEqual(parent["phases"][0]["failure"]["attempts"], 3)
+        root = Path(parent["run_directory"])
+        with self.assertRaisesRegex(ValueError, "selection"):
+            recovery.select_parent(root.parent, parent["selection"], other["run_directory"])
+        with self.assertRaisesRegex(ValueError, "No compatible"):
+            recovery.select_parent(root.parent, other["selection"], "latest")
+        args = launch.parse_args("retrieval", ["--preset", "transferability_3", "--dataset", "2h",
+                                               "--split", "test-normal", "--recover", "--note", "new annotation",
+                                               "--env-file", "/nonexistent"])
+        before = recovery.file_hashes(self.workspace, [self.workspace])
+        with patch.object(launch, "WORKSPACE", self.workspace), patch.dict(os.environ, {}, clear=True), \
+             patch.object(launch, "load_preset", side_effect=AssertionError("must use saved preset")):
+            plan, selected_root, checkpoints = launch.inspect_recovery(args.preset, args)
+        self.assertEqual(selected_root, root)
+        self.assertEqual(plan["settings"], parent["settings"])
+        self.assertEqual(checkpoints[0]["completed_task_ids"], ["a_1"])
+        self.assertEqual(plan["note"], launch.retrieval_note(parent["settings"]) + "; new annotation")
+        self.assertEqual(before, recovery.file_hashes(self.workspace, [self.workspace]))
 
     def test_repeated_recovery_keeps_all_attempt_costs_and_latest_prefix(self):
         parent = self.make_run("base")

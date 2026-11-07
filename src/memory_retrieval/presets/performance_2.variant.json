@@ -1,0 +1,25 @@
+{
+  "variant_id": "metaweft-retrieval-performance_2-v2",
+  "parent_variant": "metaweft-retrieval-base-v1",
+  "parent_source": "MetaWeft 5b864c20173e098eabb579dee892a012b64428dd; ranking controls from auto_explore/memory_retrieval_01/experiments/paired_grader_control_v1/control_a.json. Working source, prompts and resolved settings are captured per run; no runtime exploration imports.",
+  "hypothesis": "Separating candidate coverage from procedural usefulness ordering improves frozen-memory retrieval; downstream task success is not measured.",
+  "intended_differences": "HNSW top 225, Max selects 20, then nonthinking Flash grades the shortlist. Identity query and combined representation remain fixed; compare with v1 base and separately selected exact_base.",
+  "memory_structure": "Frozen flat memory bank with canonical IDs, when_to_use, content and prepared combined text-embedding-3-large 1024-dimensional vectors; preserve source references outside ranking prompts.",
+  "retrieval": "HNSW top 225, Max selects 20, then nonthinking Flash grades the shortlist. Search/fusion depths remain independent of final k. Exact overrides retain finite depth. Listwise inputs below 20 bypass selection without a call; utility grading preserves input membership. See executable preset for explicit controls and policies.",
+  "adaptation": "Disabled in retrieval-only evaluation; returned memories are not rewritten.",
+  "execution_context": "Downstream task execution disabled. One retrieval query per evaluation example; query-boundary recovery only.",
+  "evidence_update": "Disabled; prepared memories and embeddings are read-only.",
+  "feedback_access": "Retrieval sees task and candidate when_to_use/content only. Local indices replace canonical IDs in ranking inputs. Positive labels, source evidence and evaluator outputs remain evaluator-only.",
+  "memory_lifetime": "One frozen full bank per run; independent isolated index and outputs. No updates or cross-query learned state. Shared response store is allowed; no_cache default with explicit resolved cache policy recorded.",
+  "selection_category": "performance",
+  "selection_rank": 2,
+  "shared_design": "max225_scores20",
+  "selection_rationale": "Second distinct design family by best complete discovery recall@5: run115 0.792835; later paired downstream control mean 0.789720.",
+  "historical_evidence": {
+    "source_config": "auto_explore/memory_retrieval_01/experiments/paired_grader_control_v1/control_a.json",
+    "source_config_sha256": "a9395d06b21e960e65c1eaa94cc43f70dc8ee510c58a29c2eba40445eeb7fe8b",
+    "candidate_backend": "exact",
+    "qualification": "Historical recall and tokens do not measure the new HNSW defaults; repeated category names are not independent evidence."
+  },
+  "prompt_provenance": "../prompts/v2/provenance.json"
+}

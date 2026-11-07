@@ -1,0 +1,37 @@
+{
+  "schema_version": 2,
+  "name": "exact_base",
+  "description": "Exact whole-bank cosine control with capacity 225 and no ranking calls.",
+  "query_generation": {
+    "branches": [
+      {
+        "id": "identity",
+        "method": "identity"
+      }
+    ]
+  },
+  "search": {
+    "backend": "exact",
+    "depth": "all",
+    "num_candidates": null,
+    "max_bank_size": 225,
+    "routes": [
+      {
+        "branch": "identity",
+        "representation": "combined"
+      }
+    ]
+  },
+  "fusion": {
+    "method": "rrf",
+    "rank_constant": 20,
+    "candidate_limit": "all"
+  },
+  "reranking": {
+    "stages": []
+  },
+  "provider_policy": {
+    "max_retries": 5,
+    "retry_delay_seconds": 60
+  }
+}

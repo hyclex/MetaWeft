@@ -2,10 +2,21 @@
 
 ## Ownership and lineage
 
-The entrypoints only select `base` or `direct`. The launcher owns fresh and recovered run
+The entrypoints select `base`, `direct`, or a compatible retrieval preset through
+`retrieval.py --preset NAME`. The launcher owns fresh and recovered run
 identity, task selection, source snapshots, runtime isolation, and phase
 processes. The worker owns benchmark integration and finalization. Variant code
 owns memory policy; generic services own provider and store operations.
+
+The shared retrieval entrypoint preserves base's adaptation, executor prompt,
+memory updates and cold-start lifetime. V2 retrieval uses a separate client with
+its preset's exact provider retry policy; ordinary stages keep their configured
+policy. All clients share canonical logging and the resolved response cache.
+The selected preset becomes the setting and run family, separating automatic
+recovery across designs. The composed run descriptor embeds the selected preset's
+configuration and retrieval-only descriptor as provenance, while the adjacent
+`retrieval.variant.json` defines the end-to-end lifecycle. Base remains an alias
+of its existing entrypoint and descriptor.
 
 The executor interaction pattern and initial executor prompt derive from
 `metaskill-appworld/baselines/reme2f37a15/benchmark/appworld/appworld_react_agent.py`
@@ -121,13 +132,16 @@ subtotals distinguish newly incurred usage. Malformed response envelopes count a
 unknown usage when no numeric usage is reported. Collector rows label recovery
 lineage and reused tasks; ETA uses newly completed tasks in the current attempt.
 
-The invocation manifest uses `baseline=metaweft` and `setting=base|direct`, with
+The invocation manifest uses `baseline=metaweft` and a `setting` of `base`, `direct`,
+or the selected retrieval preset, with
 phases retaining the established `ordered_task_ids`, `source_task_count`,
 `partial`, output path, status, and progress fields. `tool/collect_appworld.sh`
 reads phase diagnostics even after completion and resolves moved run paths against
 the discovered invocation root. Its separate MetaWeft table reports setting,
 official scores, completed/selected/source coverage, degradation, and nonempty
-evidence-gap counts. ACE/ReMe
+evidence-gap counts. V2 preset notes are generated from resolved settings and
+optionally followed by a user annotation; recovery descriptions use saved settings.
+ACE/ReMe
 rows keep their previous interpretation.
 
 Offline tests should verify retry attribution, native log preservation, feedback

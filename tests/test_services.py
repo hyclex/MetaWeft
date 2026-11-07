@@ -225,7 +225,7 @@ class StoreTests(unittest.TestCase):
 
     def test_export_reads_all_pages_and_preserves_source(self):
         self.session.request.side_effect = [
-            es_response({"_scroll_id": "s1", "hits": {"hits": [
+            es_response({"_scroll_id": "s1", "hits": {"total": {"value": 2, "relation": "eq"}, "hits": [
                 {"_id": "b", "_source": {"vector": [0.1, 0.2]}},
             ]}}),
             es_response({"_scroll_id": "s2", "hits": {"hits": [
@@ -243,7 +243,8 @@ class StoreTests(unittest.TestCase):
 
     def test_partial_export_fails_and_cleans_up_scroll(self):
         self.session.request.side_effect = [
-            es_response({"_scroll_id": "s1", "hits": {"hits": [{"_id": "a", "_source": {}}]}}),
+            es_response({"_scroll_id": "s1", "hits": {"total": {"value": 1, "relation": "eq"},
+                                                      "hits": [{"_id": "a", "_source": {}}]}}),
             requests.Timeout("next page unavailable"), es_response({"succeeded": True}),
         ]
         with self.assertRaises(requests.Timeout):

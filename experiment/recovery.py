@@ -132,16 +132,16 @@ def commit_checkpoint(plan, phase, completed, *, previous=None, finalized=False)
         raise ValueError("Cannot finalize an incomplete task stream")
     artifacts = output / "baseline_artifacts/metaweft"
     memory = artifacts / (f"{completed[-1]}/memory_after.json"
-                          if completed and plan["setting"] == "base" else "memory_initial.json")
+                          if completed and plan["setting"] != "direct" else "memory_initial.json")
     snapshot = read_json(memory)
-    expected_status = "verified" if plan["setting"] == "base" else "disabled"
+    expected_status = "disabled" if plan["setting"] == "direct" else "verified"
     if snapshot.get("status") != expected_status:
         raise RuntimeError("Cannot commit a checkpoint without verified memory")
     files = dict(previous["files"]) if previous else {}
     paths = [memory]
     if previous is None and (output / "recovery_history").is_dir():
         paths.append(output / "recovery_history")
-    if plan["setting"] == "base":
+    if plan["setting"] != "direct":
         paths.append(artifacts / "memory_mapping.json")
     old_count = len(previous["completed_task_ids"]) if previous else 0
     if previous and previous["completed_task_ids"] != completed[:old_count]:
@@ -184,13 +184,13 @@ def load_checkpoint(plan, phase, root):
     verify_files(output, checkpoint["files"])
     memory_name = checkpoint["memory_file"]
     expected_memory = "baseline_artifacts/metaweft/" + (
-        f"{completed[-1]}/memory_after.json" if completed and plan["setting"] == "base" else "memory_initial.json")
+        f"{completed[-1]}/memory_after.json" if completed and plan["setting"] != "direct" else "memory_initial.json")
     if memory_name != expected_memory:
         raise ValueError("Checkpoint memory does not match its completed task boundary")
     if memory_name not in checkpoint["files"]:
         raise ValueError(f"Checkpoint memory is not verified: {path}")
     memory = read_json(relative_file(output, memory_name))
-    if memory.get("status") != ("verified" if plan["setting"] == "base" else "disabled"):
+    if memory.get("status") != ("disabled" if plan["setting"] == "direct" else "verified"):
         raise ValueError(f"Checkpoint memory unavailable: {path}")
     for task_id in completed:
         for directory in ("dbs", "checkpoints", "logs", "evaluation", "version", "misc"):
@@ -201,7 +201,7 @@ def load_checkpoint(plan, phase, root):
                      f"tasks/{task_id}/logs/lm_calls.jsonl", f"tasks/{task_id}/evaluation/report.md"):
             if name not in checkpoint["files"]:
                 raise ValueError(f"Checkpoint omits required task artifact: {name}")
-    if plan["setting"] == "base" and "baseline_artifacts/metaweft/memory_mapping.json" not in checkpoint["files"]:
+    if plan["setting"] != "direct" and "baseline_artifacts/metaweft/memory_mapping.json" not in checkpoint["files"]:
         raise ValueError("Checkpoint omits memory mapping")
     if checkpoint["finalized"]:
         name = f"evaluations/{phase['dataset']}.json"
@@ -301,7 +301,7 @@ def validate_parent(plan, root):
     if read_json(Path(root) / "runtime.json") != plan["runtime"]:
         raise ValueError("Runtime differs from the saved configuration")
     validate_runtime(plan["runtime"])
-    if plan["setting"] == "base" and not Path(plan["runtime"]["es_binary"]).is_file():
+    if plan["setting"] != "direct" and not Path(plan["runtime"]["es_binary"]).is_file():
         raise ValueError("Missing saved Elasticsearch binary")
     source = read_json(Path(root) / "source_provenance.json")
     verify_files(Path(root) / "source/MetaWeft", source["metaweft_files"], complete=True)

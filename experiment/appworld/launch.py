@@ -37,10 +37,17 @@ SETTINGS = {
     "retrieval_k": 5, "retrieval_candidates": 10, "reflection_candidates": 3,
     "chat_timeout": 120, "embedding_timeout": 30, "structured_output_repairs": 0,
 }
+RETRIEVAL_PRESETS = (
+    "base", "performance_1", "performance_2", "performance_3",
+    "efficiency_1", "efficiency_2", "efficiency_3",
+    "transferability_1", "transferability_2", "transferability_3", "exact_base",
+)
 
 
 def parse_args(setting, argv=None):
     parser = argparse.ArgumentParser(description=f"MetaWeft {setting} v1")
+    if setting == "retrieval":
+        parser.add_argument("--preset", choices=RETRIEVAL_PRESETS, required=True)
     parser.add_argument("--dataset", choices=DATASETS, required=True)
     parser.add_argument("--split", choices=("test-normal", "test-challenge", "test-all"), default="test-all")
     subset = parser.add_mutually_exclusive_group()
@@ -57,6 +64,26 @@ def parse_args(setting, argv=None):
     if args.task_id and args.split == "test-all":
         parser.error("--task-id requires a single test split")
     return args
+
+
+def retrieval_note(settings):
+    meta = settings.get("retrieval_meta")
+    if not meta or meta["schema_version"] != 2:
+        return ""
+    search, fusion = meta["search"], meta["fusion"]
+    parts = [f"{meta['name']}: {search['backend'].upper()} depth={search['depth']}"]
+    if search["num_candidates"] is not None:
+        parts.append(f"ANN candidates={search['num_candidates']}")
+    if search["max_bank_size"] is not None:
+        parts.append(f"bank capacity={search['max_bank_size']}")
+    parts.append(f"RRF c={fusion['rank_constant']}, fused limit={fusion['candidate_limit']}")
+    for stage in meta["reranking"]["stages"]:
+        thinking = "thinking" if stage["generation"]["enable_thinking"] else "no thinking"
+        parts.append(f"{stage['model']} {stage['method']} -> {stage['output_limit']} ({thinking})")
+    if not meta["reranking"]["stages"]:
+        parts.append("no reranking")
+    parts.append(f"top {settings['retrieval_k']} to adaptation")
+    return "; ".join(parts)
 
 
 def run_location(setting, args):
@@ -80,18 +107,22 @@ def make_plan(setting, args):
             "ordered_task_ids": selected, "source_task_count": len(original),
             "partial": selected != original, "experiment_name": split,
             "output_directory": str(root / "experiments/outputs" / split),
-            "adapt": setting == "base", "status": "planned",
+            "adapt": setting != "direct", "status": "planned",
         })
     settings = {**SETTINGS, **retry_defaults(),
                 **cache_settings(args.cache_mode, args.cache_path, workspace=WORKSPACE)}
     if setting == "base":
         settings["retrieval_meta"] = load_preset("base", num_candidates=settings["retrieval_candidates"])
+    elif setting != "direct":
+        settings["retrieval_meta"] = load_preset(setting)
+        settings["retrieval_candidates"] = settings["retrieval_meta"]["search"]["num_candidates"]
     return {
         "baseline": "metaweft", "setting": setting, "setting_id": setting_id,
         "variant_id": f"metaweft-{setting}-v1", "run_id": f"{setting_id}-{tag}",
         "run_tag": tag, "run_directory": str(root), "dataset_version": args.dataset,
-        "scenario": "cold-start" if setting == "base" else "direct", "split": args.split,
-        "note": args.note, "status": "planned", "phases": phases,
+        "scenario": "direct" if setting == "direct" else "cold-start", "split": args.split,
+        "note": "; ".join(filter(None, [retrieval_note(settings), args.note])),
+        "status": "planned", "phases": phases,
         "partial": any(p["partial"] for p in phases), "repetitions": 1,
         "task_order": "manifest order", "memory_reset": "empty independently for each split",
         "settings": settings, "command": [sys.executable, *sys.argv],
@@ -120,7 +151,15 @@ def prepare(plan, args, runtime):
                                    for p in sorted(framework.rglob("*")) if p.is_file()}
     provenance["metaweft_source"] = "source/MetaWeft: copied current working files"
     write_json(root / "source_provenance.json", provenance)
-    shutil.copy2(ENTRY / f"{plan['setting']}.variant.json", root / "variant.json")
+    if plan["setting"] in ("base", "direct"):
+        shutil.copy2(ENTRY / f"{plan['setting']}.variant.json", root / "variant.json")
+    else:
+        descriptor = json.loads((framework / "experiment/appworld/retrieval.variant.json").read_text())
+        preset = framework / "src/memory_retrieval/presets" / f"{plan['setting']}.variant.json"
+        descriptor.update(variant_id=plan["variant_id"], setting=plan["setting"],
+                          retrieval_meta=plan["settings"]["retrieval_meta"],
+                          retrieval_preset_provenance=json.loads(preset.read_text()))
+        write_json(root / "variant.json", descriptor)
     (root / "data/datasets").mkdir(parents=True)
     (root / "inputs/datasets").mkdir(parents=True)
     for item in data.iterdir():
@@ -150,7 +189,7 @@ def prepare(plan, args, runtime):
                           "env_file": str(args.env_file.resolve())})
     if args.env_file.is_file():
         plan["provider"]["env_file_sha256"] = sha256(args.env_file)
-    if plan["setting"] == "base":
+    if plan["setting"] != "direct":
         plan.update(es_binary=runtime["es_binary"], es_url=None)
     worker_environment(plan)
     write_json(root / "runtime.json", runtime)
@@ -205,7 +244,7 @@ def inspect_recovery(setting, args):
     plan = recovery_plan(parent, parent_root, checkpoints, root=root, tag=tag,
                          command=[sys.executable, *sys.argv])
     if args.note:
-        plan["note"] = args.note
+        plan["note"] = "; ".join(filter(None, [retrieval_note(parent["settings"]), args.note]))
     return plan, parent_root, checkpoints
 
 
@@ -256,6 +295,8 @@ def run_phase(plan, index):
 
 def main(setting, argv=None):
     args = parse_args(setting, argv)
+    if setting == "retrieval":
+        setting = args.preset
     if args.dry_run:
         plan = inspect_recovery(setting, args)[0] if args.recover else make_plan(setting, args)
         print(json.dumps(plan, indent=2))
@@ -272,7 +313,7 @@ def main(setting, argv=None):
     else:
         plan = make_plan(setting, args)
         assets = ["appworld_python", "installed_source", "data_root"]
-        if setting == "base":
+        if setting != "direct":
             assets.append("es_binary")
         runtime = load_runtime(required_assets=assets)
         if os.path.abspath(sys.executable) != runtime["appworld_python"]:

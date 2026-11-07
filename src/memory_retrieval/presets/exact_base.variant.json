@@ -1,0 +1,25 @@
+{
+  "variant_id": "metaweft-retrieval-exact-base-v2",
+  "parent_variant": "metaweft-retrieval-base-v1",
+  "parent_source": "MetaWeft 5b864c20173e098eabb579dee892a012b64428dd; reference configuration auto_explore/memory_retrieval_01/configs/test_base.json; preserve working source per invocation.",
+  "hypothesis": "Exact cosine provides a whole-bank reference control for candidate and ranking comparisons.",
+  "intended_differences": "Exact whole-bank cosine control with capacity 225 and no ranking calls.",
+  "memory_structure": "Frozen flat memory bank with canonical IDs, when_to_use, content and prepared combined text-embedding-3-large 1024-dimensional vectors; preserve source references outside ranking prompts.",
+  "retrieval": "Export the complete prepared combined-vector bank once per call; exact float64 cosine with memory-ID ties; RRF constant 20 retains all candidates, then return final k. Reject bank size above 225 before paid calls.",
+  "adaptation": "Disabled in retrieval-only evaluation; returned memories are not rewritten.",
+  "execution_context": "Downstream task execution disabled. One retrieval query per evaluation example; query-boundary recovery only.",
+  "evidence_update": "Disabled; prepared memories and embeddings are read-only.",
+  "feedback_access": "Retrieval sees task and candidate when_to_use/content only. Local indices replace canonical IDs in ranking inputs. Positive labels, source evidence and evaluator outputs remain evaluator-only.",
+  "memory_lifetime": "One frozen full bank per run; independent isolated index and outputs. No updates or cross-query learned state. Shared response store is allowed; no_cache default with explicit resolved cache policy recorded.",
+  "selection_category": "control",
+  "selection_rank": null,
+  "shared_design": "exact_base",
+  "selection_rationale": "Separate exact-search control outside the nine selected category settings.",
+  "historical_evidence": {
+    "source_config": "auto_explore/memory_retrieval_01/configs/test_base.json",
+    "source_config_sha256": "d034ddda4c70748246fb5544d8b11ef7d07fdf022a8c6d20131dc213e1c42948",
+    "candidate_backend": "exact",
+    "qualification": "Whole-bank control; not an HNSW measurement."
+  },
+  "prompt_provenance": "../prompts/v2/provenance.json"
+}

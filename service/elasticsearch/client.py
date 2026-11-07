@@ -118,7 +118,13 @@ class ElasticsearchStore:
                 json={"query": {"match_all": {}}, "sort": ["_doc"], "size": page_size,
                       "track_total_hits": True},
             )
+            self._check_search(response)
+            scroll_id = response.get("_scroll_id")
             total = response["hits"].get("total")
+            if isinstance(total, dict) and total.get("relation") == "eq":
+                total = total.get("value")
+            if type(total) is not int or total < 0:
+                raise ValueError("Elasticsearch export requires an exact nonnegative total")
             while True:
                 scroll_id = response.get("_scroll_id", scroll_id)
                 self._check_search(response)
@@ -131,9 +137,7 @@ class ElasticsearchStore:
                 response = self._request(
                     "POST", "/_search/scroll", json={"scroll": "1m", "scroll_id": scroll_id},
                 )
-            if isinstance(total, dict) and (total.get("relation") != "eq" or total.get("value") != len(records)):
-                raise ValueError("Elasticsearch export count differs from its exact total")
-            if isinstance(total, int) and total != len(records):
+            if total != len(records):
                 raise ValueError("Elasticsearch export count differs from its exact total")
         finally:
             if scroll_id:

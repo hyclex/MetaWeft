@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "name": "transferability_1",
+  "description": "Transfer priority 1: HNSW top 80 and Flash utility grading.",
+  "query_generation": {
+    "branches": [
+      {
+        "id": "identity",
+        "method": "identity"
+      }
+    ]
+  },
+  "search": {
+    "backend": "hnsw",
+    "depth": 80,
+    "num_candidates": 160,
+    "max_bank_size": null,
+    "routes": [
+      {
+        "branch": "identity",
+        "representation": "combined"
+      }
+    ]
+  },
+  "fusion": {
+    "method": "rrf",
+    "rank_constant": 20,
+    "candidate_limit": 80
+  },
+  "reranking": {
+    "stages": [
+      {
+        "id": "grade",
+        "method": "scores",
+        "prompt": "utility_scores_v1",
+        "model": "qwen3.8-flash",
+        "fields": [
+          "when_to_use",
+          "content"
+        ],
+        "output_limit": "all",
+        "small_input_policy": "run",
+        "generation": {
+          "temperature": 0,
+          "seed": 0,
+          "enable_thinking": false,
+          "thinking_budget": null,
+          "max_tokens": 2048,
+          "max_completion_tokens": null
+        },
+        "response": {
+          "accept_wrapped": true,
+          "repair_duplicates": false,
+          "schema_retries": 1,
+          "fallback_to_input": true,
+          "fallback_on_empty_response": true
+        }
+      }
+    ]
+  },
+  "provider_policy": {
+    "max_retries": 2,
+    "retry_delay_seconds": 60
+  }
+}
