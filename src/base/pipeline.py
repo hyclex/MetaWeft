@@ -11,6 +11,9 @@ from MetaWeft.service.llm import LLMCacheError, LLMUnavailableError
 from MetaWeft.src.memory_retrieval import load_preset, retrieve, validate_meta
 
 
+CONSOLIDATION_PROMPT_MAX_BYTES = 900_000
+
+
 def memory_index_body(dimensions=1024):
     return {
         "settings": {
@@ -141,10 +144,17 @@ class BasePipeline:
                              "evaluate expanded presets with the retrieval-only runner")
 
     def _chat(self, llm, name, payload):
+        messages = [{"role": "system", "content": self.templates[name]},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False, allow_nan=False)}]
+        if name == "consolidation":
+            prompt_bytes = sum(len(message["content"].encode("utf-8")) for message in messages)
+            if prompt_bytes > CONSOLIDATION_PROMPT_MAX_BYTES:
+                return {"operation": "defer", "target_id": None, "when_to_use": None, "content": None,
+                        "reason": f"Full consolidation prompt is {prompt_bytes} UTF-8 bytes, exceeding "
+                                  f"the {CONSOLIDATION_PROMPT_MAX_BYTES}-byte safety limit. "
+                                  "Deferred before a provider call; source evidence is preserved without truncation."}
         response = _call(
-            llm.chat,
-            [{"role": "system", "content": self.templates[name]},
-             {"role": "user", "content": json.dumps(payload, ensure_ascii=False, allow_nan=False)}],
+            llm.chat, messages,
             phase=name, component=f"base.{name}", temperature=0.0,
             seed=0, extra_body={"enable_thinking": False},
         )

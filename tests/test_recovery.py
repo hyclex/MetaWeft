@@ -333,6 +333,48 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(plan["note"], launch.retrieval_note(parent["settings"]) + "; new annotation")
         self.assertEqual(before, recovery.file_hashes(self.workspace, [self.workspace]))
 
+    def test_explicit_source_repair_preserves_parent_prefix_and_future_recovery(self):
+        from tools import recover_metaweft_consolidation_limit as repair
+
+        parent = self.make_run("efficiency_1", splits=("test-normal", "test-challenge"))
+        self.assertIsNone(self.run_worker(parent, index=0)[0])
+        self.run_worker(parent, index=1, fail_task="b_1", fail_phase="consolidation")
+        parent_root = Path(parent["run_directory"])
+        before = recovery.file_hashes(parent_root, [parent_root])
+        child = self.child(parent)
+        child_root = Path(child["run_directory"])
+        pipeline = child_root / "source/MetaWeft" / repair.PIPELINE
+        replacement = self.workspace / "repaired_pipeline.py"
+        replacement.write_bytes(pipeline.read_bytes() + b"\n# Offline source-repair fixture.\n")
+        checkpoints = [recovery.read_json(Path(p["output_directory"]) / "checkpoint.json")
+                       for p in child["phases"]]
+
+        with patch.object(repair, "ORIGINAL_PIPELINE_SHA256", recovery.sha256(pipeline)), \
+                patch.object(repair, "REPAIRED_PIPELINE_SHA256", recovery.sha256(replacement)), \
+                patch.object(repair, "REPAIRED_SOURCE", replacement):
+            repair.apply_repair(child)
+
+        self.assertNotEqual(child["recovery_identity"], parent["recovery_identity"])
+        self.assertEqual(child["settings"], parent["settings"])
+        self.assertEqual(pipeline.read_bytes(), replacement.read_bytes())
+        self.assertIn("mixed protocol", child["note"])
+        self.assertEqual(child["source_repair"]["boundaries"][1]["first_repaired_task_id"], "b_1")
+        for phase, original in zip(child["phases"], checkpoints):
+            checkpoint = recovery.load_checkpoint(child, phase, child_root)
+            self.assertEqual(checkpoint["files"], original["files"])
+            self.assertEqual(checkpoint["completed_task_ids"], original["completed_task_ids"])
+            self.assertEqual(checkpoint["inherited_identity_before_source_repair"], parent["recovery_identity"])
+
+        error, _, opened, _ = self.run_worker(child, index=1, fail_task="c_1")
+        self.assertIsInstance(error, LLMUnavailableError)
+        self.assertEqual(opened, ["b_1", "c_1"])
+        grandchild = self.child(child, tag="grandchild")
+        self.assertEqual(grandchild["phases"][1]["completed_task_ids"], ["a_1", "b_1"])
+        self.assertEqual(grandchild["recovery_identity"], child["recovery_identity"])
+        self.assertEqual((Path(grandchild["run_directory"]) / "source/MetaWeft" / repair.PIPELINE).read_bytes(),
+                         replacement.read_bytes())
+        self.assertEqual(before, recovery.file_hashes(parent_root, [parent_root]))
+
     def test_repeated_recovery_keeps_all_attempt_costs_and_latest_prefix(self):
         parent = self.make_run("base")
         self.run_worker(parent, fail_task="b_1")

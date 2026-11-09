@@ -1,5 +1,6 @@
 {
   "variant_id": "metaweft-base-v1",
+  "consolidation_prompt_policy": "Defer candidates before the consolidation provider call when complete system and user messages exceed 900000 UTF-8 bytes. Record byte counts and the reason in updates.json; preserve all raw evidence, references and existing memory. Continue subsequent candidates. This conservative byte budget is not a token estimate.",
   "parent_variant": "reme-origin-embedding3large (executor and prompt lineage; new MetaWeft memory policy)",
   "parent_source": "metaskill-appworld/baselines/reme2f37a15/benchmark/appworld/appworld_react_agent.py and prompt.py; bundled upstream 2f37a159b72a04ac1885a7db7f1a663a833e7791; inspected sibling checkout 2bd51dabc0e84c2d6aa9f9db66e630a78f58ab94 with local integration changes. Reuses sibling AppWorld loader/evaluator, experiments/code/common runner/episodes/lm_logger, and run lifecycle/runtime helpers. Each invocation preserves actual MetaWeft and sibling working-source snapshots plus hashes; the revision alone is not the executed-source record.",
   "hypothesis": "A procedural-memory pipeline combining task-conditioned adaptation and evidence-grounded semantic consolidation can improve ordered-task reuse relative to matched direct execution. V1 smoke tests establish pipeline operation, not a performance improvement.",

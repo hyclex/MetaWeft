@@ -45,10 +45,12 @@ experiment. V1 supplies extension points rather than implementing these features
    utility-based eviction.
 
 The five-neighbor bound may miss overlaps elsewhere in memory. Full referenced
-evidence is supplied without silently dropping trace content to fit a prompt;
-provider context-limit failures follow the visible failure policy. This is a
-deliberate v1 limitation, not a promise that memory grows indefinitely without
-additional design work.
+evidence is supplied without silently dropping trace content to fit a prompt.
+Consolidation defers a candidate before a provider call when the system and user
+messages exceed 900,000 UTF-8 bytes, recording the measured size and reason in
+the update artifact. This conservative byte budget is not a token estimate.
+Raw evidence and existing memory remain intact; later candidates are still
+processed. Other provider failures retain the visible failure policy.
 
 ## Controls and failure policy
 

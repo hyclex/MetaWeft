@@ -133,6 +133,27 @@ Accounting reports cumulative distinct physical calls plus `current_attempt` and
 `inherited` subtotals, including failed attempts and unknown usage. Cache hits are
 counted separately and do not add incurred tokens or charges.
 
+### Recovery with the consolidation size repair
+
+Ordinary recovery executes the parent's captured code. For the diagnosed
+consolidation input-length failure in the original pipeline, the explicitly
+scoped [repair utility](../../../tools/recover_metaweft_consolidation_limit.py)
+applies the pinned 900,000-byte consolidation guard to a new recovery copy:
+
+```bash
+python3 -B tools/recover_metaweft_consolidation_limit.py --preset efficiency_1 --dataset 8h --split test-all --recover /path/to/failed/run --dry-run
+# Remove --dry-run to launch; this makes live provider calls.
+```
+
+The guard defers oversized memory updates without truncating raw evidence.
+The utility validates the original parent, records the exact source diff and
+task boundary, and binds the child's checkpoints to the repaired source identity.
+Inherited tasks retain their original behavior; reports label this continuation
+as a mixed-protocol repair. Parent evidence remains unchanged. See its
+[design descriptor](../../../tools/recover_metaweft_consolidation_limit.variant.json).
+If the repaired run later fails, use ordinary `run.sh ... --recover` against that
+child so its saved repair is preserved; do not reapply this one-time utility.
+
 ## Outputs and interpretation
 
 ```text

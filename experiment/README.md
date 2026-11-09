@@ -9,8 +9,9 @@ linked directory. See [AppWorld usage](appworld/README.md) for setup and options
 
 The shared retrieval entrypoint supports `base`, `performance_1..3`,
 `efficiency_1..3`, `transferability_1..3`, and `exact_base`. The background catalog
-below covers only `transferability_3` and `efficiency_1`. Every setting supports
-`test-normal`, `test-challenge`, and `test-all` for `2h`, `8h`, and `full` datasets.
+below covers the existing `base` and `direct` entrypoints alongside
+`transferability_3` and `efficiency_1`. All launch examples use `test-all`
+for `2h`, `8h`, and `full` datasets.
 Each command below is a separate launch; choose the combination you need.
 `test-all` includes both test splits with independent memory initialization.
 
@@ -34,7 +35,7 @@ response store). For repeated design tests, add `--cache-mode cache`; use
 For example, from the workspace root:
 
 ```bash
-bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-normal --limit 2 --cache-mode cache
+bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-all --limit 2 --cache-mode cache
 ```
 
 This is a live run on misses. Reused responses are logged separately from incurred
@@ -44,11 +45,11 @@ for fresh stochastic repetitions. See the [cache contract](../service/llm/README
 ## Inspect and check
 
 ```bash
-# Exact two-task selection; no writes or model calls.
-bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-normal --limit 2 --dry-run
-bash MetaWeft/experiment/appworld/run.sh direct --dataset 2h --split test-normal --limit 2 --dry-run
-bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-normal --limit 2 --dry-run
-bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-normal --limit 2 --dry-run
+# First two tasks per split (four total); no writes or model calls.
+bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-all --limit 2 --dry-run
+bash MetaWeft/experiment/appworld/run.sh direct --dataset 2h --split test-all --limit 2 --dry-run
+bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-all --limit 2 --dry-run
+bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-all --limit 2 --dry-run
 
 # Existing runtime readiness; no benchmark run.
 bash metaskill-appworld/run/setup_runtime.sh --check
@@ -58,27 +59,30 @@ metaweft_python=$(python3 -B metaskill-appworld/run/runtime_paths.py appworld_py
 "$metaweft_python" -B -m unittest discover -s MetaWeft/tests -v
 ```
 
-## Live two-task validation
+## Live smoke validation
 
 These commands make real provider calls and write raw artifacts. They select the
-same first two Quick2h normal tasks in existing manifest order. The second task
-can exercise memory learned from the first; a successful run does not require
-both benchmark tasks to be solved.
+first two Quick2h tasks from each split in existing manifest order, four tasks in
+total. Memory resets between splits; within each split, the second task can use
+memory learned from the first. Run completion does not require every task to be solved.
 
 ```bash
-bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-normal --limit 2 --cache-mode no_cache --note "retrieval two-task smoke"
-bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-normal --limit 2 --cache-mode no_cache --note "retrieval two-task smoke"
+bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-all --limit 2 --cache-mode no_cache --note "v1 two-per-split smoke"
+bash MetaWeft/experiment/appworld/run.sh direct --dataset 2h --split test-all --limit 2 --cache-mode no_cache --note "v1 two-per-split smoke"
+bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-all --limit 2 --cache-mode no_cache --note "retrieval two-per-split smoke"
+bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-all --limit 2 --cache-mode no_cache --note "retrieval two-per-split smoke"
 ```
 
 Inspect official evaluations, memory-stage outcomes, degradation, complete task
 logs, and accounting before recording validation results. A cold-start first task
 alone cannot test nonempty retrieval or adaptation. Offline fixtures cover the
 operation branches that two live tasks may not naturally reach. Listwise ranking
-bypasses banks smaller than 20, so these two-task runs cannot establish its live
+bypasses banks smaller than 20, so these two-task-per-split runs cannot establish its live
 coverage. Transferability's grader still runs on a nonempty smaller bank.
 
 The [validation record](appworld/VALIDATION.md#shared-retrieval-entrypoint-validation-2026-11-06)
-links the completed two-task runs, their observed stage coverage, and accounting.
+records the earlier two-task normal-split runs, their observed stage coverage, and accounting.
+Their raw smoke-run artifacts were removed during requested test-log cleanup.
 
 ## Retrieval-only validation
 
@@ -107,98 +111,6 @@ for representations, metrics, checkpoint recovery, and output details. Its
 `--recover RUN_DIRECTORY` resumes retrieval queries; the AppWorld recovery
 commands below resume full task streams.
 
-## Recovery
-
-Repeat the original preset, dataset, split, and any `--limit`/`--task-id` options
-and add `--recover`. The examples below select full splits; append the original
-subset options when recovering a smoke run. Inspect a saved run without writes:
-
-```bash
-bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-normal --limit 2 --recover --dry-run
-```
-
-Recovery selects only the same preset, uses captured source/settings and committed
-memory, and creates a new linked run directory. A different preset cannot recover
-the parent. Cache policy and retrieval retry controls come from the saved run.
-
-### Recover the latest compatible failed run
-
-#### 2h
-
-```bash
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-normal --recover >> raw_logs/metaweft-transferability_3-2h-test-normal-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-challenge --recover >> raw_logs/metaweft-transferability_3-2h-test-challenge-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-all --recover >> raw_logs/metaweft-transferability_3-2h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-normal --recover >> raw_logs/metaweft-efficiency_1-2h-test-normal-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-challenge --recover >> raw_logs/metaweft-efficiency_1-2h-test-challenge-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-all --recover >> raw_logs/metaweft-efficiency_1-2h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
-```
-
-#### 8h
-
-```bash
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-normal --recover >> raw_logs/metaweft-transferability_3-8h-test-normal-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-challenge --recover >> raw_logs/metaweft-transferability_3-8h-test-challenge-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-all --recover >> raw_logs/metaweft-transferability_3-8h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-normal --recover >> raw_logs/metaweft-efficiency_1-8h-test-normal-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-challenge --recover >> raw_logs/metaweft-efficiency_1-8h-test-challenge-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-all --recover >> raw_logs/metaweft-efficiency_1-8h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
-```
-
-#### full
-
-```bash
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-normal --recover >> raw_logs/metaweft-transferability_3-full-test-normal-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-challenge --recover >> raw_logs/metaweft-transferability_3-full-test-challenge-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-all --recover >> raw_logs/metaweft-transferability_3-full-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-normal --recover >> raw_logs/metaweft-efficiency_1-full-test-normal-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-challenge --recover >> raw_logs/metaweft-efficiency_1-full-test-challenge-recovery-latest-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-all --recover >> raw_logs/metaweft-efficiency_1-full-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
-```
-
-### Recover a specific failed run
-
-Replace each placeholder directory with the failed run matching the command's
-preset, dataset, split, and task selection.
-
-#### 2h
-
-```bash
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-normal --recover "/path/to/failed/transferability_3-2h-test-normal-run" >> raw_logs/metaweft-transferability_3-2h-test-normal-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-challenge --recover "/path/to/failed/transferability_3-2h-test-challenge-run" >> raw_logs/metaweft-transferability_3-2h-test-challenge-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-all --recover "/path/to/failed/transferability_3-2h-test-all-run" >> raw_logs/metaweft-transferability_3-2h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-normal --recover "/path/to/failed/efficiency_1-2h-test-normal-run" >> raw_logs/metaweft-efficiency_1-2h-test-normal-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-challenge --recover "/path/to/failed/efficiency_1-2h-test-challenge-run" >> raw_logs/metaweft-efficiency_1-2h-test-challenge-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-all --recover "/path/to/failed/efficiency_1-2h-test-all-run" >> raw_logs/metaweft-efficiency_1-2h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
-```
-
-#### 8h
-
-```bash
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-normal --recover "/path/to/failed/transferability_3-8h-test-normal-run" >> raw_logs/metaweft-transferability_3-8h-test-normal-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-challenge --recover "/path/to/failed/transferability_3-8h-test-challenge-run" >> raw_logs/metaweft-transferability_3-8h-test-challenge-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-all --recover "/path/to/failed/transferability_3-8h-test-all-run" >> raw_logs/metaweft-transferability_3-8h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-normal --recover "/path/to/failed/efficiency_1-8h-test-normal-run" >> raw_logs/metaweft-efficiency_1-8h-test-normal-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-challenge --recover "/path/to/failed/efficiency_1-8h-test-challenge-run" >> raw_logs/metaweft-efficiency_1-8h-test-challenge-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-all --recover "/path/to/failed/efficiency_1-8h-test-all-run" >> raw_logs/metaweft-efficiency_1-8h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
-```
-
-#### full
-
-```bash
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-normal --recover "/path/to/failed/transferability_3-full-test-normal-run" >> raw_logs/metaweft-transferability_3-full-test-normal-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-challenge --recover "/path/to/failed/transferability_3-full-test-challenge-run" >> raw_logs/metaweft-transferability_3-full-test-challenge-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-all --recover "/path/to/failed/transferability_3-full-test-all-run" >> raw_logs/metaweft-transferability_3-full-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-normal --recover "/path/to/failed/efficiency_1-full-test-normal-run" >> raw_logs/metaweft-efficiency_1-full-test-normal-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-challenge --recover "/path/to/failed/efficiency_1-full-test-challenge-run" >> raw_logs/metaweft-efficiency_1-full-test-challenge-recovery-specific-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-all --recover "/path/to/failed/efficiency_1-full-test-all-run" >> raw_logs/metaweft-efficiency_1-full-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
-```
-
-Recovery reuses committed tasks and restarts the unfinished task from the prior
-checkpoint's memory. The failed parent remains unchanged, including failed calls
-and partial-update evidence. Runs predating the checkpoint format are unsupported.
-See [recovery details](appworld/README.md#recovery).
-
 ## Longer runs and collection
 
 Each command is a separate optional experiment; choose the combination you need.
@@ -211,33 +123,27 @@ use `no_cache` for fresh provider samples.
 #### 2h
 
 ```bash
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-normal --cache-mode no_cache >> raw_logs/metaweft-transferability_3-2h-test-normal-fresh-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-challenge --cache-mode no_cache >> raw_logs/metaweft-transferability_3-2h-test-challenge-fresh-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-all --cache-mode no_cache >> raw_logs/metaweft-base-2h-test-all-fresh-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh direct --dataset 2h --split test-all --cache-mode no_cache >> raw_logs/metaweft-direct-2h-test-all-fresh-launch.log 2>&1 < /dev/null &
 nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-all --cache-mode no_cache >> raw_logs/metaweft-transferability_3-2h-test-all-fresh-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-normal --cache-mode no_cache >> raw_logs/metaweft-efficiency_1-2h-test-normal-fresh-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-challenge --cache-mode no_cache >> raw_logs/metaweft-efficiency_1-2h-test-challenge-fresh-launch.log 2>&1 < /dev/null &
 nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-all --cache-mode no_cache >> raw_logs/metaweft-efficiency_1-2h-test-all-fresh-launch.log 2>&1 < /dev/null &
 ```
 
 #### 8h
 
 ```bash
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-normal --cache-mode no_cache >> raw_logs/metaweft-transferability_3-8h-test-normal-fresh-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-challenge --cache-mode no_cache >> raw_logs/metaweft-transferability_3-8h-test-challenge-fresh-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh base --dataset 8h --split test-all --cache-mode no_cache >> raw_logs/metaweft-base-8h-test-all-fresh-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh direct --dataset 8h --split test-all --cache-mode no_cache >> raw_logs/metaweft-direct-8h-test-all-fresh-launch.log 2>&1 < /dev/null &
 nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-all --cache-mode no_cache >> raw_logs/metaweft-transferability_3-8h-test-all-fresh-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-normal --cache-mode no_cache >> raw_logs/metaweft-efficiency_1-8h-test-normal-fresh-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-challenge --cache-mode no_cache >> raw_logs/metaweft-efficiency_1-8h-test-challenge-fresh-launch.log 2>&1 < /dev/null &
 nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-all --cache-mode no_cache >> raw_logs/metaweft-efficiency_1-8h-test-all-fresh-launch.log 2>&1 < /dev/null &
 ```
 
 #### full
 
 ```bash
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-normal --cache-mode no_cache >> raw_logs/metaweft-transferability_3-full-test-normal-fresh-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-challenge --cache-mode no_cache >> raw_logs/metaweft-transferability_3-full-test-challenge-fresh-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh base --dataset full --split test-all --cache-mode no_cache >> raw_logs/metaweft-base-full-test-all-fresh-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh direct --dataset full --split test-all --cache-mode no_cache >> raw_logs/metaweft-direct-full-test-all-fresh-launch.log 2>&1 < /dev/null &
 nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-all --cache-mode no_cache >> raw_logs/metaweft-transferability_3-full-test-all-fresh-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-normal --cache-mode no_cache >> raw_logs/metaweft-efficiency_1-full-test-normal-fresh-launch.log 2>&1 < /dev/null &
-nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-challenge --cache-mode no_cache >> raw_logs/metaweft-efficiency_1-full-test-challenge-fresh-launch.log 2>&1 < /dev/null &
 nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-all --cache-mode no_cache >> raw_logs/metaweft-efficiency_1-full-test-all-fresh-launch.log 2>&1 < /dev/null &
 ```
 
@@ -254,7 +160,88 @@ nohup bash tool/collect_appworld.sh >> raw_logs/metaweft-collection-launch.log 2
 ```
 
 The reports (`res/appworld_2h.md`, `res/appworrld_8h.md`, and
-`res/appworkd_full.md`) show the selected preset and saved automatic/custom note,
+`res/appworkd_full.md`) show the selected setting and saved note (automatic design
+descriptions plus any custom annotation for v2 presets),
 official TGC/SGC, completed/selected/source coverage, status, degradation, evidence
 gaps, and recovery lineage. Existing ACE and ReMe tables remain separate.
 No performance or successful validation claim follows from these example commands.
+
+## Recovery
+
+Repeat the original entrypoint/preset, dataset, split, and any `--limit`/`--task-id` options
+and add `--recover`. The examples below select full splits; append the original
+subset options when recovering a smoke run. Inspect a saved run without writes:
+
+```bash
+bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-all --limit 2 --recover --dry-run
+```
+
+Recovery selects only the same setting, uses captured source/settings and committed
+memory when enabled, and creates a new linked run directory. A different setting
+cannot recover the parent. Cache policy and retrieval retry controls come from the saved run.
+
+### Recover the latest compatible failed run
+
+#### 2h
+
+```bash
+nohup bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-all --recover >> raw_logs/metaweft-base-2h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh direct --dataset 2h --split test-all --recover >> raw_logs/metaweft-direct-2h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-all --recover >> raw_logs/metaweft-transferability_3-2h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-all --recover >> raw_logs/metaweft-efficiency_1-2h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+```
+
+#### 8h
+
+```bash
+nohup bash MetaWeft/experiment/appworld/run.sh base --dataset 8h --split test-all --recover >> raw_logs/metaweft-base-8h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh direct --dataset 8h --split test-all --recover >> raw_logs/metaweft-direct-8h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-all --recover >> raw_logs/metaweft-transferability_3-8h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-all --recover >> raw_logs/metaweft-efficiency_1-8h-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+```
+
+#### full
+
+```bash
+nohup bash MetaWeft/experiment/appworld/run.sh base --dataset full --split test-all --recover >> raw_logs/metaweft-base-full-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh direct --dataset full --split test-all --recover >> raw_logs/metaweft-direct-full-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-all --recover >> raw_logs/metaweft-transferability_3-full-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-all --recover >> raw_logs/metaweft-efficiency_1-full-test-all-recovery-latest-launch.log 2>&1 < /dev/null &
+```
+
+### Recover a specific failed run
+
+Replace each placeholder directory with the failed run matching the command's
+setting, dataset, split, and task selection.
+
+#### 2h
+
+```bash
+nohup bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-all --recover "/path/to/failed/base-2h-test-all-run" >> raw_logs/metaweft-base-2h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh direct --dataset 2h --split test-all --recover "/path/to/failed/direct-2h-test-all-run" >> raw_logs/metaweft-direct-2h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 2h --split test-all --recover "/path/to/failed/transferability_3-2h-test-all-run" >> raw_logs/metaweft-transferability_3-2h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 2h --split test-all --recover "/path/to/failed/efficiency_1-2h-test-all-run" >> raw_logs/metaweft-efficiency_1-2h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+```
+
+#### 8h
+
+```bash
+nohup bash MetaWeft/experiment/appworld/run.sh base --dataset 8h --split test-all --recover "/path/to/failed/base-8h-test-all-run" >> raw_logs/metaweft-base-8h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh direct --dataset 8h --split test-all --recover "/path/to/failed/direct-8h-test-all-run" >> raw_logs/metaweft-direct-8h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset 8h --split test-all --recover "/path/to/failed/transferability_3-8h-test-all-run" >> raw_logs/metaweft-transferability_3-8h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset 8h --split test-all --recover "/path/to/failed/efficiency_1-8h-test-all-run" >> raw_logs/metaweft-efficiency_1-8h-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+```
+
+#### full
+
+```bash
+nohup bash MetaWeft/experiment/appworld/run.sh base --dataset full --split test-all --recover "/path/to/failed/base-full-test-all-run" >> raw_logs/metaweft-base-full-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh direct --dataset full --split test-all --recover "/path/to/failed/direct-full-test-all-run" >> raw_logs/metaweft-direct-full-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset transferability_3 --dataset full --split test-all --recover "/path/to/failed/transferability_3-full-test-all-run" >> raw_logs/metaweft-transferability_3-full-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset full --split test-all --recover "/path/to/failed/efficiency_1-full-test-all-run" >> raw_logs/metaweft-efficiency_1-full-test-all-recovery-specific-launch.log 2>&1 < /dev/null &
+```
+
+Recovery reuses committed tasks and restarts the unfinished task from the prior
+checkpoint's memory. The failed parent remains unchanged, including failed calls
+and partial-update evidence. Runs predating the checkpoint format are unsupported.
+See [recovery details](appworld/README.md#recovery).

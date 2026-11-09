@@ -257,6 +257,27 @@ class BaseTests(unittest.TestCase):
                 self.assertEqual(len(llm.calls), 1)
                 self.assertEqual(self.store.writes, [])
 
+    def test_oversized_consolidation_defers_each_candidate_without_dropping_evidence(self):
+        before = self.existing()
+        historical = self.root / before["source_refs"][0]
+        large_evidence = {**EVIDENCE, "trace": [{"step": 1, "observation": "界" * 310_000}]}
+        historical.write_text(json.dumps(large_evidence, ensure_ascii=False))
+        original = historical.read_bytes()
+        llm = FakeLLM([{"candidates": [CANDIDATE, CANDIDATE]}])
+
+        result = self.pipeline.post_task(EVIDENCE, llm=llm, artifacts=self.artifacts)
+
+        self.assertEqual([event.get("operation") for event in result.decisions], ["defer", "defer"])
+        self.assertFalse(result.degraded)
+        self.assertTrue(all("900000" in event["reason"] and "UTF-8" in event["reason"]
+                            for event in result.decisions))
+        self.assertEqual([call["phase"] for call in llm.calls], ["reflection"])
+        self.assertEqual(self.store.writes, [])
+        self.assertEqual(self.store.records, {"old": before})
+        self.assertEqual(historical.read_bytes(), original)
+        self.assertEqual(json.loads((self.artifacts / "evidence.json").read_text()), EVIDENCE)
+        self.assertEqual(json.loads((self.artifacts / "updates.json").read_text()), result.to_dict())
+
     def test_sequential_candidates_see_earlier_updates_and_deduplicate_evidence(self):
         llm = FakeLLM([{"candidates": [CANDIDATE, CANDIDATE]}, decision("add")])
         original_chat = llm.chat
