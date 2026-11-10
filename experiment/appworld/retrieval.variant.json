@@ -1,5 +1,6 @@
 {
   "variant_id": "metaweft-retrieval-v1",
+  "split_execution": "test-all runs normal and challenge splits concurrently with separate memory, outputs, runtime caches and temporary paths. Tasks within each split remain sequential. Wait for both splits; either failure fails the invocation. Recovery skips completed splits.",
   "consolidation_prompt_policy": "Base consolidation defers candidates whose complete system and user messages exceed 900000 UTF-8 bytes. Record byte counts and the reason in updates.json without a consolidation chat call or memory write. Preserve full evidence and continue subsequent candidates; the byte budget is not a token estimate.",
   "parent_variant": "metaweft-base-v1",
   "parent_source": "Reuses src/base/pipeline.py and the existing AppWorld launcher, executor, worker and completed-task recovery. Each run preserves actual MetaWeft and sibling working-source snapshots, including uncommitted changes, preset JSON, prompts and descriptors. No copied retrieval implementation or runtime exploration imports.",

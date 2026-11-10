@@ -1,5 +1,6 @@
 {
   "variant_id": "metaweft-direct-v1",
+  "split_execution": "test-all runs normal and challenge splits concurrently with separate outputs, runtime caches and temporary paths. Tasks within each split remain sequential. Wait for both splits; either failure fails the invocation. Recovery skips completed splits.",
   "parent_variant": "metaweft-base-v1",
   "parent_source": "MetaWeft base v1 executor and benchmark integration, derived from metaskill-appworld/baselines/reme2f37a15/benchmark/appworld/appworld_react_agent.py and prompt.py; bundled upstream 2f37a159b72a04ac1885a7db7f1a663a833e7791; inspected sibling checkout 2bd51dabc0e84c2d6aa9f9db66e630a78f58ab94 with local changes. Reuses sibling AppWorld loader/evaluator, common runner/episodes/lm_logger, and runtime/provenance helpers. Every run preserves actual framework and sibling source snapshots and resolved prompts.",
   "hypothesis": "Measure task performance and total provider usage with the same executor controls while all procedural-memory stages are disabled, providing a reference comparison for metaweft-base-v1.",

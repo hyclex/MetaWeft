@@ -13,7 +13,8 @@ below covers the existing `base` and `direct` entrypoints alongside
 `transferability_3` and `efficiency_1`. All launch examples use `test-all`
 for `2h`, `8h`, and `full` datasets.
 Each command below is a separate launch; choose the combination you need.
-`test-all` includes both test splits with independent memory initialization.
+`test-all` runs both test splits in parallel with independent memory initialization;
+tasks within each split remain sequential.
 
 Both requested presets pass at most five memories to the unchanged base adaptation
 and execution/update pipeline. Automatic run notes describe the resolved retrieval

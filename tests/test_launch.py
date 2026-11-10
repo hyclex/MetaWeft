@@ -1,12 +1,15 @@
-"""Read-only launch selection and runtime dependency checks."""
+"""Offline launch selection, phase execution, and runtime dependency checks."""
 
+from contextlib import redirect_stdout
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from textwrap import dedent
 import unittest
 from unittest.mock import patch
 
@@ -157,6 +160,125 @@ class LaunchTests(unittest.TestCase):
             args = launch.parse_args("base", ["--dataset", "2h", "--split", "test-normal", *flags])
             with self.assertRaises(ValueError):
                 launch.make_plan("base", args)
+
+
+class PhaseExecutionTests(unittest.TestCase):
+    def setUp(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.workspace = Path(temporary.name)
+        with patch.object(launch, "WORKSPACE", self.workspace):
+            self.plan = launch.make_plan("direct", launch.parse_args("direct", ["--dataset", "2h", "--limit", "1"]))
+
+    def prepare(self, plan, args, runtime):
+        root = Path(plan["run_directory"])
+        worker = root / "source/MetaWeft/experiment/appworld/worker.py"
+        worker.parent.mkdir(parents=True)
+        worker.write_text(dedent("""\
+            import json
+            import os
+            from pathlib import Path
+            import sys
+            import time
+
+            plan = json.loads(Path(sys.argv[1]).read_text())
+            index = int(sys.argv[2])
+            phase = plan["phases"][index]
+            root = Path(plan["run_directory"])
+            output = Path(phase["output_directory"])
+            output.mkdir(parents=True)
+            (root / f"started-{index}").write_text(str(os.getpid()))
+            pending = [i for i, p in enumerate(plan["phases"]) if p["status"] != "completed"]
+            deadline = time.monotonic() + 5
+            while not all((root / f"started-{i}").is_file() for i in pending):
+                if time.monotonic() >= deadline:
+                    raise SystemExit("The other split never started")
+                time.sleep(0.01)
+            (output / "environment.json").write_text(json.dumps({
+                key: os.environ[key] for key in ("APPWORLD_CACHE", "TMPDIR", "PYTHONPATH")
+            }))
+            failed = index == plan.get("fail_index")
+            (output / "run_manifest.json").write_text(json.dumps({
+                "status": "failed" if failed else "completed",
+                "completed_task_ids": [] if failed else phase["ordered_task_ids"],
+                "degraded_task_ids": [], "degraded_reasons": {}, "evidence_gaps": [],
+            }))
+            print(phase["split"] + " stdout " + "x" * 100000, flush=True)
+            print(phase["split"] + " stderr", file=sys.stderr, flush=True)
+            sys.exit(1 if failed else 0)
+        """))
+        launch.worker_environment(plan)
+
+    def execute(self):
+        with patch.object(launch, "make_plan", return_value=self.plan), \
+             patch.object(launch, "prepare", side_effect=self.prepare), \
+             patch.object(launch, "load_runtime", return_value={"appworld_python": sys.executable}), \
+             patch.object(launch.signal, "signal"), patch.dict(os.environ), redirect_stdout(io.StringIO()):
+            launch.main("direct", ["--dataset", "2h", "--limit", "1"])
+        return json.loads((Path(self.plan["run_directory"]) / "run_manifest.json").read_text())
+
+    def test_test_all_workers_overlap_and_keep_isolated_state_and_logs(self):
+        saved = self.execute()
+        self.assertEqual(saved["status"], "completed")
+        self.assertEqual([p["status"] for p in saved["phases"]], ["completed", "completed"])
+        environments = []
+        log = (Path(saved["run_directory"]) / "console.log").read_text()
+        for phase in saved["phases"]:
+            self.assertEqual(phase["completed_task_ids"], phase["ordered_task_ids"])
+            environments.append(json.loads((Path(phase["output_directory"]) / "environment.json").read_text()))
+            self.assertIn(phase["split"] + " stdout " + "x" * 100000, log)
+            self.assertIn(phase["split"] + " stderr", log)
+        for key in ("APPWORLD_CACHE", "TMPDIR"):
+            self.assertNotEqual(environments[0][key], environments[1][key])
+        self.assertEqual(environments[0]["PYTHONPATH"], environments[1]["PYTHONPATH"])
+
+    def test_failed_split_does_not_prevent_other_split_finishing(self):
+        for index in (0, 1):
+            with self.subTest(failed_index=index):
+                self.plan["run_directory"] = str(self.workspace / f"failure-{index}")
+                self.plan["fail_index"] = index
+                for phase in self.plan["phases"]:
+                    phase.update(status="planned", output_directory=str(
+                        Path(self.plan["run_directory"]) / "experiments/outputs" / phase["split"]))
+                with self.assertRaises(RuntimeError):
+                    self.execute()
+                saved = json.loads((Path(self.plan["run_directory"]) / "run_manifest.json").read_text())
+                self.assertEqual(saved["status"], "failed")
+                self.assertEqual(saved["phases"][index]["status"], "failed")
+                self.assertEqual(saved["phases"][1 - index]["status"], "completed")
+
+    def test_completed_split_is_not_restarted(self):
+        self.plan["phases"][0].update(status="completed", completed_task_ids=["already-done"])
+        saved = self.execute()
+        self.assertEqual(saved["phases"][0]["completed_task_ids"], ["already-done"])
+        self.assertFalse((Path(saved["run_directory"]) / "started-0").exists())
+        self.assertTrue((Path(saved["run_directory"]) / "started-1").exists())
+
+    def test_single_split_still_completes(self):
+        self.plan["phases"] = self.plan["phases"][:1]
+        saved = self.execute()
+        self.assertEqual(saved["status"], "completed")
+        self.assertEqual(saved["phases"][0]["status"], "completed")
+
+    def test_interruption_terminates_both_workers(self):
+        children = []
+        popen = subprocess.Popen
+
+        def start(*args, **kwargs):
+            child = popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        with patch.object(launch.subprocess, "Popen", side_effect=start), \
+             patch.object(launch, "as_completed", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.execute()
+        self.assertEqual(len(children), 2)
+        for child in children:
+            self.assertIsNotNone(child.poll())
+            self.assertTrue(child.stdout.closed)
+        saved = json.loads((Path(self.plan["run_directory"]) / "run_manifest.json").read_text())
+        self.assertEqual(saved["status"], "failed")
 
 
 if __name__ == "__main__":

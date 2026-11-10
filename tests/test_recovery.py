@@ -440,13 +440,15 @@ class RecoveryTests(unittest.TestCase):
             recovery.clone_run(source, plan, checkpoints)
             child_plans.append(plan)
 
-        def run_phase(plan, index):
-            invoked.append(index)
-            self.assertIsNone(self.run_worker(plan, index)[0])
+        def run_phases(plan):
+            for index, phase in enumerate(plan["phases"]):
+                if phase["status"] != "completed":
+                    invoked.append(index)
+                    self.assertIsNone(self.run_worker(plan, index)[0])
 
         with patch.object(launch, "WORKSPACE", self.workspace), \
              patch.object(launch, "prepare_recovery", side_effect=prepare), \
-             patch.object(launch, "run_phase", side_effect=run_phase), \
+             patch.object(launch, "run_phases", side_effect=run_phases), \
              patch.object(launch.signal, "signal"), patch.dict(os.environ, {}, clear=True):
             launch.main("base", ["--dataset", "2h", "--recover", "--env-file", "/nonexistent"])
         self.assertEqual(invoked, [1])
@@ -574,7 +576,7 @@ class RecoveryTests(unittest.TestCase):
         stream = io.StringIO()
         with patch.object(launch, "WORKSPACE", self.workspace), \
              patch.object(launch, "load_runtime", side_effect=AssertionError("must use saved runtime")), \
-             patch.object(launch, "run_phase", side_effect=AssertionError("dry run")), \
+             patch.object(launch, "run_phases", side_effect=AssertionError("dry run")), \
              patch.dict(os.environ, {}, clear=True), redirect_stdout(stream):
             launch.main("direct", ["--dataset", "2h", "--split", "test-normal", "--recover", "--dry-run",
                                    "--env-file", "/nonexistent"])
@@ -591,7 +593,7 @@ class RecoveryTests(unittest.TestCase):
         # A different current checkout is irrelevant to the worker's import path.
         with patch.object(launch, "FRAMEWORK", self.workspace / "different-checkout"), patch.dict(os.environ):
             launch.worker_environment(child)
-            launch.run_phase(child, 0)
+            launch.run_phases(child)
         executed = recovery.read_json(root / "executed.json")
         self.assertEqual(executed["marker"], "captured")
         self.assertTrue(Path(executed["client"]).is_relative_to(root / "source/MetaWeft"))

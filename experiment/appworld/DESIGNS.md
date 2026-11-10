@@ -56,9 +56,11 @@ missing outputs or failed evaluation are infrastructure errors.
 ## Isolation and recoverability
 
 Each invocation lives under `raw_logs/metaweft-<setting>-<dataset>/experiment/output/`
-with a timestamp and random suffix. Each test split gets its own process, memory
-index, mutable databases, and state. Runtime cache and temporary paths are invocation
-local. The explicit shared LLM response store is an exception; it holds completed
+with a timestamp and random suffix. `test-all` starts both split workers in parallel
+and waits for both, reporting invocation failure if either fails. Each test split
+gets its own process, memory index, mutable databases, runtime cache, and temporary
+paths. Tasks within a split remain sequential; recovery skips completed splits.
+The explicit shared LLM response store is an exception; it holds completed
 responses, never mutable benchmark state. Read-only runtime/data assets may be shared. Recovery creates another
 isolated invocation linked to the failed parent; it never edits that parent.
 

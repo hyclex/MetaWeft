@@ -61,10 +61,14 @@ explicit conflicting recovery options are rejected. Cache hits reuse prior
 samples and are excluded from incurred provider usage; choose `no_cache` when a
 comparison requires fresh samples. See the [LLM cache API](../../service/llm/README.md#response-cache).
 
-The launchers support sequential fresh streams and recovery from committed task
-boundaries. They do not provide training, arbitrary warm-start memory, within-task
-resume, repetitions within an invocation, or parallel task execution. Every
-invocation gets a unique output directory; prior runs are not overwritten.
+With `test-all`, the launchers run normal and challenge splits concurrently in
+separate workers, each with its own memory, outputs, runtime caches, and temporary
+paths. Tasks within each split remain sequential. The launcher waits for both
+splits and reports failure if either fails; recovery skips completed splits.
+Recovery from committed task boundaries is supported. The launchers do not provide
+training, arbitrary warm-start memory, within-task resume, repetitions within an
+invocation, or parallel tasks within a split. Every invocation gets a unique
+output directory; prior runs are not overwritten.
 
 Base pre-task retrieval runs through the shared
 [retrieval framework](../../src/memory_retrieval/README.md) using its `base`

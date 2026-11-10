@@ -1,6 +1,7 @@
 """Isolated fresh and recovered launches using captured AppWorld sources."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import json
 import os
@@ -9,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+from threading import Lock
 import traceback
 import uuid
 
@@ -122,7 +124,7 @@ def make_plan(setting, args):
         "run_tag": tag, "run_directory": str(root), "dataset_version": args.dataset,
         "scenario": "direct" if setting == "direct" else "cold-start", "split": args.split,
         "note": "; ".join(filter(None, [retrieval_note(settings), args.note])),
-        "status": "planned", "phases": phases,
+        "status": "planned", "phases": phases, "phase_execution": "parallel",
         "partial": any(p["partial"] for p in phases), "repetitions": 1,
         "task_order": "manifest order", "memory_reset": "empty independently for each split",
         "settings": settings, "command": [sys.executable, *sys.argv],
@@ -243,6 +245,7 @@ def inspect_recovery(setting, args):
     check_recovery_options(parent, args)
     plan = recovery_plan(parent, parent_root, checkpoints, root=root, tag=tag,
                          command=[sys.executable, *sys.argv])
+    plan["phase_execution"] = "parallel"
     if args.note:
         plan["note"] = "; ".join(filter(None, [retrieval_note(parent["settings"]), args.note]))
     return plan, parent_root, checkpoints
@@ -268,29 +271,71 @@ def prepare_recovery(plan, parent_root, checkpoints, args):
     write_json(Path(plan["run_directory"]) / "resolved_settings.json", plan)
 
 
-def run_phase(plan, index):
+def run_phases(plan):
     root = Path(plan["run_directory"])
-    command = [sys.executable, "-B", "-m", "MetaWeft.experiment.appworld.worker",
-               str(root / "run_manifest.json"), str(index)]
-    with (root / "console.log").open("a") as log:
-        child = subprocess.Popen(command, cwd=root, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True)
+    pending = [i for i, phase in enumerate(plan["phases"]) if phase["status"] != "completed"]
+    if not pending:
+        return
+    children, futures = {}, {}
+    log_lock = Lock()
+    with (root / "console.log").open("a") as log, ThreadPoolExecutor(max_workers=len(pending)) as pool:
+        def forward_output(child):
+            try:
+                for line in child.stdout:
+                    with log_lock:
+                        log.write(line)
+                        log.flush()
+                        print(line, end="", flush=True)
+                return child.wait()
+            finally:
+                child.stdout.close()
+
         try:
-            for line in child.stdout:
-                log.write(line)
-                log.flush()
-                print(line, end="", flush=True)
-            if child.wait():
-                raise RuntimeError(f"Phase failed; see {root / 'console.log'}")
+            environments = {}
+            for index in pending:
+                phase = plan["phases"][index]
+                environment = isolated_environment(root / "runtime" / phase["split"])
+                environment["PYTHONPATH"] = os.environ["PYTHONPATH"]
+                environments[index] = environment
+                phase["writable_paths"] = {k: v for k, v in environment.items()
+                                           if k.endswith("CACHE_DIR") or k in ("APPWORLD_CACHE", "TMPDIR", "XDG_CACHE_HOME")}
+                phase["status"] = "running"
+            write_json(root / "run_manifest.json", plan)
+            for index in pending:
+                command = [sys.executable, "-B", "-m", "MetaWeft.experiment.appworld.worker",
+                           str(root / "run_manifest.json"), str(index)]
+                child = subprocess.Popen(command, cwd=root, env=environments[index], stdout=subprocess.PIPE,
+                                         stderr=subprocess.STDOUT, text=True)
+                children[index] = child
+                futures[pool.submit(forward_output, child)] = index
+            failed = []
+            for future in as_completed(futures):
+                if future.result():
+                    failed.append(plan["phases"][futures[future]]["split"])
+            if failed:
+                raise RuntimeError(f"Phases failed: {', '.join(failed)}; see {root / 'console.log'}")
         finally:
-            if child.poll() is None:
-                child.terminate()
+            for child in children.values():
+                if child.poll() is None:
+                    child.terminate()
+            for child in children.values():
                 try:
                     child.wait(timeout=30)
                 except subprocess.TimeoutExpired:
                     child.kill()
                     child.wait()
-            child.stdout.close()
+            for index in pending:
+                phase = plan["phases"][index]
+                saved = Path(phase["output_directory"]) / "run_manifest.json"
+                if saved.is_file():
+                    result = json.loads(saved.read_text())
+                    for key in ("status", "completed_task_ids", "degraded_task_ids", "degraded_reasons", "evidence_gaps",
+                                "started_at", "finished_at", "failure", "current_task_id"):
+                        if key in result:
+                            phase[key] = result[key]
+                else:
+                    phase["status"] = "failed"
+            write_json(root / "run_manifest.json", plan)
 
 
 def main(setting, argv=None):
@@ -334,24 +379,7 @@ def main(setting, argv=None):
         else:
             prepare(plan, args, runtime)
         plan["status"] = "running"
-        for index, phase in enumerate(plan["phases"]):
-            if phase["status"] == "completed":
-                continue
-            phase["status"] = "running"
-            write_json(root / "run_manifest.json", plan)
-            try:
-                run_phase(plan, index)
-            finally:
-                saved = Path(phase["output_directory"]) / "run_manifest.json"
-                if saved.is_file():
-                    result = json.loads(saved.read_text())
-                    for key in ("status", "completed_task_ids", "degraded_task_ids", "degraded_reasons", "evidence_gaps",
-                                "started_at", "finished_at", "failure", "current_task_id"):
-                        if key in result:
-                            phase[key] = result[key]
-                else:
-                    phase["status"] = "failed"
-                write_json(root / "run_manifest.json", plan)
+        run_phases(plan)
         plan["status"] = "completed"
     except BaseException as error:
         plan.update(status="failed", error_type=type(error).__name__)
