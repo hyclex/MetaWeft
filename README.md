@@ -19,6 +19,8 @@ ideas are not additional implementation requirements.
 | `service/llm/` | Provider calls, embeddings, persistent response caching, bounded retries, and an injected call recorder. |
 | `service/elasticsearch/` | Storage, retrieval primitives, confirmed writes, and complete exports. |
 | `src/base/` | The reference memory representation and retrieve/adapt/reflect/consolidate policy. |
+| `src/framework/` | Explicit prepared inputs, episode evidence, and independent memory update contracts. |
+| `src/ace_adapt_reme_task/` | Dual-memory V1: ReMe-like task knowledge, a full ACE-derived adaptation playbook, and one fixed guide. |
 | `src/memory_retrieval/` | Shared query generation, HNSW/exact search, RRF fusion, optional ranking, versioned presets, and retrieval traces. |
 | `src/base/prompts/` | Explicit, versioned prompts owned by the baseline. |
 | `experiment/appworld/` | Thin setting entrypoints, AppWorld execution integration, run lifecycle, and adjacent variant descriptors. |
@@ -39,6 +41,7 @@ Run commands from the workspace root containing `MetaWeft/`,
 # Inspect the exact task selection without writes or provider calls.
 bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-normal --limit 2 --dry-run
 bash MetaWeft/experiment/appworld/run.sh direct --dataset 2h --split test-normal --limit 2 --dry-run
+bash MetaWeft/experiment/appworld/run.sh metaweft_v1 --dataset 2h --split test-normal --limit 2 --dry-run
 ```
 
 See the [experiment command catalog](experiment/README.md) for offline checks,

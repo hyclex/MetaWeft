@@ -110,6 +110,20 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("| fixture | direct | direct | appworld |", report)
         self.assertIn("| 2 / 2 / 18 tasks; subset | Complete; degraded 0/2 tasks |", report)
 
+    def test_dual_memory_branch_degradation_remains_visible(self):
+        self.add_run("metaweft", setting="metaweft_v1", phase_diagnostics={
+            "completed_task_ids": ["one_1", "two_1"], "degraded_task_ids": ["two_1"],
+            "degraded_reasons": {"two_1": [{"stage": "update", "reason": "adaptation: invalid edit"}]},
+            "memory_branch_results": {"two_1": {
+                "task": {"status": "completed", "degraded": False},
+                "adaptation": {"status": "degraded", "degraded": True, "error": "invalid edit"},
+            }},
+            "adaptation_memory": {"entries": 1, "revision": 1, "rendered_bytes": 100},
+        })
+        report, _ = self.collect()
+        self.assertIn("| fixture | metaweft_v1 | cold start | appworld |", report)
+        self.assertIn("| 2 / 2 / 18 tasks; subset | Complete; degraded 1/2 tasks |", report)
+
     def test_preset_settings_and_saved_automatic_notes_need_no_report_schema_change(self):
         from html import escape
         from MetaWeft.experiment.appworld import launch

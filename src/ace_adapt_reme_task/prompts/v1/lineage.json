@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "design": "ACE-derived adaptation plus ReMe-derived task memory; not exact ACE reproduction",
+  "parents": [
+    {
+      "checkout": "metaskill-appworld",
+      "path": "experiments/prompts/appworld_react_generator_prompt.txt",
+      "revision": "2bd51dabc0e84c2d6aa9f9db66e630a78f58ab94",
+      "sha256": "c109aeb9cf1f672eaec5bbe63bbd68cfc5ae4290ec7e9cd78d5eed6ad29df47e",
+      "captured_path": "parents/metaskill-appworld/experiments/prompts/appworld_react_generator_prompt.txt",
+      "transformation": "Full-playbook use retained; guide construction replaces task execution; omitted long demonstrations and previous reflection."
+    },
+    {
+      "checkout": "metaskill-appworld",
+      "path": "experiments/prompts/appworld_react_reflector_no_gt_prompt.txt",
+      "revision": "2bd51dabc0e84c2d6aa9f9db66e630a78f58ab94",
+      "sha256": "a74b98d9f294d4f65a37da207841eeee629ac83351a6bfb5d017faf809b070c7",
+      "captured_path": "parents/metaskill-appworld/experiments/prompts/appworld_react_reflector_no_gt_prompt.txt",
+      "transformation": "Diagnosis retained inside one combined update; removed ground-truth/test-report requests and detailed reasoning output."
+    },
+    {
+      "checkout": "metaskill-appworld",
+      "path": "experiments/prompts/appworld_react_curator_prompt.txt",
+      "revision": "2bd51dabc0e84c2d6aa9f9db66e630a78f58ab94",
+      "sha256": "27b7d9dd2dcfe85646bf19ea7be387760874b70c0f9f27b1bed38d8f3e11e2bc",
+      "captured_path": "parents/metaskill-appworld/experiments/prompts/appworld_react_curator_prompt.txt",
+      "transformation": "Localized novelty-preserving additions retained; extended with UPDATE; one combined call and no helpful/harmful counters."
+    },
+    {
+      "checkout": "metaskill-appworld",
+      "path": "experiments/code/ace/playbook.py",
+      "revision": "2bd51dabc0e84c2d6aa9f9db66e630a78f58ab94",
+      "sha256": "96c8068d6f41fb244fe370a0f81440cb82cb77f554e68fdb7d02acf327288bf8",
+      "captured_path": "parents/metaskill-appworld/experiments/code/ace/playbook.py",
+      "transformation": "Heading and [id] content presentation retained; canonical state is strict JSON, not parsed text."
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/base/pipeline.py",
+      "revision": "598aa4f29f456c245a46130af2289dba4589818d",
+      "sha256": "a88bc3cea962343ec7ed419766578876f1645f2349b002b27d1293eaae07f8a2",
+      "captured_path": "parents/MetaWeft/src/base/pipeline.py",
+      "transformation": "Bounded extraction/consolidation copy adds descriptive name, prepared guide context, strict recoverable errors and fatal uncertain writes."
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/base/prompts/v1/reflection.txt",
+      "revision": "598aa4f29f456c245a46130af2289dba4589818d",
+      "sha256": "574712f05460b2c3000f136a6e55bc77f6ea55ede9f2c11423bc2db7581ec124",
+      "captured_path": "parents/MetaWeft/src/base/prompts/v1/reflection.txt",
+      "transformation": "Adds descriptive name and frozen retrieved memories/guide; same observed-evidence policy."
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/base/prompts/v1/consolidation.txt",
+      "revision": "598aa4f29f456c245a46130af2289dba4589818d",
+      "sha256": "2145cc5940afdd0a99bc97a6ab79dd7842b10ce59a7e41bc1ae0640232b36a6f",
+      "captured_path": "parents/MetaWeft/src/base/prompts/v1/consolidation.txt",
+      "transformation": "Adds descriptive name on candidate/revise; retained add/skip/revise/defer semantics and exact null unused fields."
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/base/prompts/v1/execution_base.txt",
+      "revision": "598aa4f29f456c245a46130af2289dba4589818d",
+      "sha256": "3c719f7c37a6bc777fcc19f2d0759e3926925eb3bab7227ae61f80843f5df889",
+      "captured_path": "parents/MetaWeft/src/base/prompts/v1/execution_base.txt",
+      "transformation": "Copied byte-for-byte; only fixed guide enters executor."
+    }
+  ],
+  "transformations": [
+    "Full playbook supplied to both calls; no applicability field, retrieval or pruning.",
+    "Combined reflection and curation into one adaptation_update call.",
+    "Task-guidance output replaces answer/code output; no extra execution loop.",
+    "Content-only ADD and UPDATE with code-owned IDs, provenance and revisions."
+  ],
+  "prompts": {
+    "adaptation.txt": "12901d8be3620f873bf4fa2bf054f197eba2ec1f63531007734508bf481ba602",
+    "adaptation_update.txt": "b90ac09db08370109d1278d5b636a3de71522d34e629190a5db52c21d9f6501f",
+    "execution_base.txt": "3c719f7c37a6bc777fcc19f2d0759e3926925eb3bab7227ae61f80843f5df889",
+    "task_consolidation.txt": "38fde1f6e4c391eaf52c03c43eb67c0d7585edf873a23208448a19dcdc61438d",
+    "task_extraction.txt": "a7fcfd416cea8c39c862c6555ca6eaaeb6c7537274d1bdfa7d6da0563fbbe6c7"
+  }
+}

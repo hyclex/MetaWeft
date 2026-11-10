@@ -1,7 +1,7 @@
 # MetaWeft on AppWorld
 
 Use `run.sh` from the workspace root. It dispatches to thin `base.py`,
-`direct.py`, and `retrieval.py` entrypoints, each referencing its adjacent variant descriptor. See the
+`direct.py`, `retrieval.py`, and `metaweft_v1.py` entrypoints, each referencing its adjacent variant descriptor. See the
 [command catalog](../README.md) for runnable check, smoke-test, and collection
 examples.
 
@@ -30,7 +30,7 @@ AppWorld Python interpreter, selected automatically by the launcher.
 
 | Option | Meaning |
 | --- | --- |
-| Positional entrypoint | `base`, `direct`, or `retrieval`. |
+| Positional entrypoint | `base`, `direct`, `retrieval`, or `metaweft_v1`. |
 | `--preset NAME` | Required for `retrieval`: `base`, `performance_1..3`, `efficiency_1..3`, `transferability_1..3`, or `exact_base`. The preset becomes the run setting. |
 | `--dataset` | Required: `2h`, `8h`, or `full`, using the sibling dataset mapping. |
 | `--split` | `test-normal`, `test-challenge`, or `test-all` (default). |
@@ -92,6 +92,35 @@ declared capacity of 225; it does not evict memories or silently increase capaci
 The expanded `setting_1..6` designs remain available only through the
 [retrieval benchmark](../../../evaluations/appworld_mem_retrieval/README.md).
 
+## Dual-memory V1
+
+`metaweft_v1` uses [the dual-memory design](../../src/ace_adapt_reme_task/DESIGNS.md)
+and [its descriptor](metaweft_v1.variant.json). It starts with empty task memory
+and an empty four-heading adaptation playbook. The unchanged `efficiency_1`
+retrieval preset returns up to ten task memories; baseline retrieval still
+returns five. One adapter call receives those records and the complete playbook,
+including when both are empty, and supplies a fixed guide to the existing executor.
+After evaluation, independent task and adaptation updates receive the frozen
+episode and scalar reward, without private evaluator reports or solutions.
+Task items have descriptive names; playbook bullets contain content under
+selection, specialization, composition, or verification, with ADD/UPDATE edits.
+
+```bash
+bash MetaWeft/experiment/appworld/run.sh metaweft_v1 --dataset 2h --split test-normal --limit 2 --dry-run
+# Live provider calls, two sequential tasks with an isolated empty memory pair:
+bash MetaWeft/experiment/appworld/run.sh metaweft_v1 --dataset 2h --split test-normal --limit 2 --cache-mode no_cache
+```
+
+V1 writes format-2 checkpoints that commit both verified memory snapshots and the
+task position together. Playbook revision changes only for an applied edit batch;
+the pair epoch advances for every completed task, including no-op updates.
+Recovery restores both states from the same epoch into a new isolated attempt.
+Existing settings retain format-1 checkpoints. Invalid update schemas are visible
+branch degradation; uncertain writes, required snapshot failures, and exhausted
+provider/cache calls stop the stream without committing the task.
+V1 does not expose warm starts, retrieval tuning, within-task adaptation, or
+playbook pruning. See [V1 validation](VALIDATION_V1.md) for tested coverage.
+
 ## Recovery
 
 Repeat the original entrypoint/preset, dataset, split, and `--limit`/`--task-id` selection
@@ -141,11 +170,11 @@ counted separately and do not add incurred tokens or charges.
 
 Ordinary recovery executes the parent's captured code. For the diagnosed
 consolidation input-length failure in the original pipeline, the explicitly
-scoped [repair utility](../../../tools/recover_metaweft_consolidation_limit.py)
+scoped [repair utility](../../../tool/recover_metaweft_consolidation_limit.py)
 applies the pinned 900,000-byte consolidation guard to a new recovery copy:
 
 ```bash
-python3 -B tools/recover_metaweft_consolidation_limit.py --preset efficiency_1 --dataset 8h --split test-all --recover /path/to/failed/run --dry-run
+python3 -B tool/recover_metaweft_consolidation_limit.py --preset efficiency_1 --dataset 8h --split test-all --recover /path/to/failed/run --dry-run
 # Remove --dry-run to launch; this makes live provider calls.
 ```
 
@@ -154,7 +183,7 @@ The utility validates the original parent, records the exact source diff and
 task boundary, and binds the child's checkpoints to the repaired source identity.
 Inherited tasks retain their original behavior; reports label this continuation
 as a mixed-protocol repair. Parent evidence remains unchanged. See its
-[design descriptor](../../../tools/recover_metaweft_consolidation_limit.variant.json).
+[design descriptor](../../../tool/recover_metaweft_consolidation_limit.variant.json).
 If the repaired run later fails, use ordinary `run.sh ... --recover` against that
 child so its saved repair is preserved; do not reapply this one-time utility.
 

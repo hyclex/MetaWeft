@@ -52,7 +52,7 @@ def prepare_exact_bank(store, *, representations, dimensions, max_bank_size=None
             raise ValueError("Exact bank probe source requires an object and canonical ID")
         if "id" in probe_source and probe_source["id"] != probe_id:
             raise ValueError("Exact bank probe source ID differs from its canonical ID")
-        for field in ("when_to_use", "content"):
+        for field in ("when_to_use", "content", "name"):
             if field in probe_source and (not isinstance(probe_source[field], str) or not probe_source[field].strip()):
                 raise ValueError("Exact bank probe source text must be a nonempty string")
         if "source_refs" in probe_source:
@@ -85,6 +85,10 @@ def prepare_exact_bank(store, *, representations, dimensions, max_bank_size=None
                for key in ("when_to_use", "content")):
             raise ValueError("Exact bank memories require when_to_use and content strings")
         record = {"id": identifier, "when_to_use": source["when_to_use"], "content": source["content"]}
+        if "name" in source:
+            if not isinstance(source["name"], str) or not source["name"].strip():
+                raise ValueError("Exact bank name must be a nonempty string when present")
+            record["name"] = source["name"]
         if "source_refs" in source:
             refs = source["source_refs"]
             if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):
@@ -98,7 +102,9 @@ def prepare_exact_bank(store, *, representations, dimensions, max_bank_size=None
             vectors[name][identifier] = vector
             observed_record[field] = vector
         if identifier == probe_id and probe_source is not None:
-            selected = ("id", "when_to_use", "content", "source_refs",
+            if ("name" in probe_source) != ("name" in observed_record):
+                raise ValueError("Exact bank export contradicts the probe source field: name")
+            selected = ("id", "when_to_use", "content", "name", "source_refs",
                         *(REPRESENTATIONS[name]["field"] for name in representations))
             for field in selected:
                 if field in probe_source and probe_source[field] != observed_record.get(field):

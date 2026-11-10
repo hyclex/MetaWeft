@@ -120,6 +120,10 @@ def search(store, vector, *, representation, k, num_candidates):
         if type(score) not in (int, float) or not math.isfinite(score):
             raise RetrievalFailure("Search memories require finite numeric scores")
         record = {"id": identifier, "when_to_use": source["when_to_use"], "content": source["content"]}
+        if "name" in source:
+            if not isinstance(source["name"], str) or not source["name"].strip():
+                raise RetrievalFailure("Memory name must be a nonempty string when present")
+            record["name"] = source["name"]
         if "source_refs" in source:
             refs = source["source_refs"]
             if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):

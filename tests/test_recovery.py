@@ -334,7 +334,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(before, recovery.file_hashes(self.workspace, [self.workspace]))
 
     def test_explicit_source_repair_preserves_parent_prefix_and_future_recovery(self):
-        from tools import recover_metaweft_consolidation_limit as repair
+        from tool import recover_metaweft_consolidation_limit as repair
 
         parent = self.make_run("efficiency_1", splits=("test-normal", "test-challenge"))
         self.assertIsNone(self.run_worker(parent, index=0)[0])

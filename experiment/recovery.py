@@ -19,6 +19,24 @@ import tempfile
 
 
 RECOVERY_VERSION = 1
+PAIR_RECOVERY_VERSION = 2
+TASK_MEMORY_SCHEMA = "metaweft-task-memory-v1"
+ADAPTATION_MEMORY_SCHEMA = "metaweft-adaptation-memory-v1"
+V1_TASK_ARTIFACTS = (
+    "task_spec.json", "retrieval.json", "adaptation_preparation.json", "adaptation_event.json",
+    "context.json", "trace.jsonl", "evidence.json", "episode_evidence.json",
+    "task_reflection.json", "task_updates.json", "adaptation_updates.json",
+    "memory_after.json", "adaptation_memory_after.json", "stages.json", "result.json",
+)
+
+
+def recovery_version(setting):
+    return PAIR_RECOVERY_VERSION if setting == "metaweft_v1" else RECOVERY_VERSION
+
+
+def stream_id(plan, phase):
+    origin = plan.get("recovery", {}).get("origin_run_id", plan["run_id"])
+    return f"{origin}:{phase['split']}"
 
 
 def read_json(path):
@@ -122,6 +140,184 @@ def phase_output(root, phase):
     return relative_file(root, f"experiments/outputs/{phase['experiment_name']}")
 
 
+def _validate_task_records(records, dimensions):
+    if not isinstance(records, list):
+        raise ValueError("Task snapshot records must be a list")
+    identifiers = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {"id", "document"}:
+            raise ValueError("Invalid task snapshot record")
+        identifier, document = record["id"], record["document"]
+        if not isinstance(identifier, str) or not identifier.strip() or identifier in identifiers:
+            raise ValueError("Task snapshot contains invalid or duplicate IDs")
+        identifiers.add(identifier)
+        if not isinstance(document, dict) or set(document) != {
+                "id", "name", "when_to_use", "content", "source_refs", "embedding"}:
+            raise ValueError("Invalid V1 task memory schema")
+        if document["id"] != identifier:
+            raise ValueError("Task snapshot document ID differs from its stored ID")
+        for key in ("name", "when_to_use", "content"):
+            if not isinstance(document[key], str) or not document[key].strip():
+                raise ValueError(f"Task memory {key} must be nonempty text")
+        references = document["source_refs"]
+        if (not isinstance(references, list) or not references
+                or any(not isinstance(ref, str) or not ref for ref in references)
+                or len(set(references)) != len(references)):
+            raise ValueError("Task memory requires unique source references")
+        vector = document["embedding"]
+        if (not isinstance(vector, list) or len(vector) != dimensions
+                or any(type(value) not in (int, float) or not math.isfinite(value) for value in vector)):
+            raise ValueError("Task snapshot must preserve its complete finite embedding vector")
+    if records != sorted(records, key=lambda record: record["id"]):
+        raise ValueError("Task snapshot records are not canonically ordered")
+
+
+def _snapshot_wrapper(role, plan, phase, epoch):
+    if type(epoch) is not int or epoch < 0:
+        raise ValueError("Pair epoch must be a nonnegative integer")
+    return {"role": role, "schema": TASK_MEMORY_SCHEMA if role == "task" else ADAPTATION_MEMORY_SCHEMA,
+            "stream_id": stream_id(plan, phase), "state_epoch": epoch, "status": "verified"}
+
+
+def snapshot_task_v2(store, path, plan, phase, epoch, task_id=None):
+    """Required snapshots fail closed; a failed export is never an empty memory."""
+    snapshot = {**_snapshot_wrapper("task", plan, phase, epoch),
+                "records": sorted(store.export(), key=lambda record: record["id"])}
+    _validate_task_records(snapshot["records"], plan["settings"]["embedding_dimensions"])
+    write_json(path, snapshot)
+    return snapshot
+
+
+def snapshot_adaptation_v2(playbook, path, plan, phase, epoch, task_id=None):
+    from MetaWeft.src.ace_adapt_reme_task.adaptation_memory import validate_playbook
+    snapshot = {**_snapshot_wrapper("adaptation", plan, phase, epoch),
+                "playbook": validate_playbook(playbook)}
+    if snapshot["playbook"]["revision"] > epoch:
+        raise ValueError("Playbook revision exceeds its completed-task epoch")
+    write_json(path, snapshot)
+    return snapshot
+
+
+def restore_adaptation(snapshot):
+    from MetaWeft.src.ace_adapt_reme_task.adaptation_memory import validate_playbook
+    if (snapshot.get("status") != "verified" or snapshot.get("role") != "adaptation"
+            or snapshot.get("schema") != ADAPTATION_MEMORY_SCHEMA):
+        raise ValueError("Cannot restore an unverified adaptation snapshot")
+    playbook = validate_playbook(snapshot["playbook"])
+    if playbook != snapshot["playbook"]:
+        raise ValueError("Restored playbook differs from its checkpoint")
+    return playbook
+
+
+def _pair_memories(completed):
+    prefix = "baseline_artifacts/metaweft/"
+    boundary = f"{completed[-1]}/" if completed else ""
+    return {
+        "task": {"snapshot": prefix + boundary + ("memory_after.json" if completed else "memory_initial.json"),
+                 "mapping": prefix + "memory_mapping.json"},
+        "adaptation": {"snapshot": prefix + boundary + ("adaptation_memory_after.json" if completed
+                                                       else "adaptation_memory_initial.json")},
+    }
+
+
+def _source_file(root, output, reference, *, adaptation):
+    from MetaWeft.src.ace_adapt_reme_task.evidence import validate_source_reference
+    if not isinstance(reference, str):
+        raise ValueError("Invalid memory source reference")
+    name, separator, pointer = reference.partition("#")
+    path = relative_file(root, name).resolve()
+    if not path.is_relative_to(Path(root).resolve()) or not path.is_relative_to(output.resolve()):
+        raise ValueError("Memory source reference leaves its stream")
+    expected = "adaptation_updates.json" if adaptation else "evidence.json"
+    if path.name != expected or bool(separator) != adaptation:
+        raise ValueError("Memory source reference has the wrong evidence role")
+    if adaptation:
+        validate_source_reference(root, reference)
+        if not pointer.startswith("/applied/"):
+            raise ValueError("Playbook source reference must identify an applied edit")
+    else:
+        evidence = read_json(path)
+        reward = evidence.get("reward")
+        if (not isinstance(evidence.get("task_spec"), dict) or not isinstance(evidence.get("trace"), list)
+                or type(reward) not in (int, float) or not math.isfinite(reward) or not 0 <= reward <= 1):
+            raise ValueError("Invalid preserved task evidence")
+    return path
+
+
+def _validate_pair(plan, phase, completed, output, memories, files=None):
+    if memories != _pair_memories(completed):
+        raise ValueError("Checkpoint memories do not match the completed task boundary")
+    epoch, sources = len(completed), []
+    for role, references in memories.items():
+        name = references["snapshot"]
+        if files is not None and name not in files:
+            raise ValueError("Checkpoint pair snapshot is not hash-verified")
+        snapshot = read_json(relative_file(output, name))
+        expected = _snapshot_wrapper(role, plan, phase, epoch)
+        if any(snapshot.get(key) != value or type(snapshot.get(key)) is not type(value)
+               for key, value in expected.items()):
+            raise ValueError("Checkpoint pair has invalid role, schema, stream or epoch")
+        payload_key = "records" if role == "task" else "playbook"
+        if set(snapshot) != {*expected, payload_key}:
+            raise ValueError("Invalid pair snapshot wrapper")
+        if role == "task":
+            _validate_task_records(snapshot["records"], plan["settings"]["embedding_dimensions"])
+            items = [record["document"] for record in snapshot["records"]]
+        else:
+            playbook = restore_adaptation(snapshot)
+            if playbook["revision"] > epoch:
+                raise ValueError("Playbook revision exceeds its completed-task epoch")
+            items = playbook["entries"]
+            if epoch == 0 and (playbook["revision"] != 0 or playbook["next_entry_number"] != 1):
+                raise ValueError("Initial playbook must have empty initialization counters")
+        if epoch == 0 and items:
+            raise ValueError("V1 initial memory pair must be empty")
+        for item in items:
+            for reference in item["source_refs"]:
+                path = _source_file(Path(plan["run_directory"]), output, reference,
+                                    adaptation=role == "adaptation")
+                if files is not None and str(path.relative_to(output.resolve())) not in files:
+                    raise ValueError("Memory source reference is not checkpoint-hashed")
+                sources.append(path)
+    mapping_name = memories["task"]["mapping"]
+    if files is not None and mapping_name not in files:
+        raise ValueError("Checkpoint omits memory mapping")
+    mapping = read_json(relative_file(output, mapping_name))
+    properties = mapping.get("mappings", {}).get("properties", {})
+    if (properties.get("name") != {"type": "text"}
+            or properties.get("embedding", {}).get("dims") != plan["settings"]["embedding_dimensions"]
+            or mapping.get("settings", {}).get("index.mapping.exclude_source_vectors") is not False):
+        raise ValueError("V1 memory mapping does not preserve names and complete vectors")
+    return sources
+
+
+def state_refs(plan, phase, checkpoint):
+    """Return framework StateRef constructor fields for the committed pair."""
+    if checkpoint["version"] != PAIR_RECOVERY_VERSION:
+        raise ValueError("State references require a paired checkpoint")
+    output, root = Path(phase["output_directory"]), Path(plan["run_directory"])
+    return {role: {"role": role, "schema": TASK_MEMORY_SCHEMA if role == "task" else ADAPTATION_MEMORY_SCHEMA,
+                   "stream_id": stream_id(plan, phase), "epoch": checkpoint["state_epoch"],
+                   "snapshot": str((output / reference["snapshot"]).relative_to(root)),
+                   "sha256": checkpoint["files"][reference["snapshot"]]}
+            for role, reference in checkpoint["memories"].items()}
+
+
+def _validate_task_artifacts(output, completed, files=None, *, paired=False):
+    for task_id in completed:
+        for directory in ("dbs", "checkpoints", "logs", "evaluation", "version", "misc"):
+            path = output / "tasks" / task_id / directory
+            if not path.is_dir():
+                raise ValueError(f"Missing committed task directory: {path}")
+        required = [f"baseline_artifacts/metaweft/{task_id}/result.json",
+                    f"tasks/{task_id}/logs/lm_calls.jsonl", f"tasks/{task_id}/evaluation/report.md"]
+        if paired:
+            required.extend(f"baseline_artifacts/metaweft/{task_id}/{name}" for name in V1_TASK_ARTIFACTS)
+        for name in required:
+            if not relative_file(output, name).is_file() or (files is not None and name not in files):
+                raise ValueError(f"Checkpoint omits required task artifact: {name}")
+
+
 def commit_checkpoint(plan, phase, completed, *, previous=None, finalized=False):
     """Commit only after the adapter has validated all outputs and memory."""
     output = Path(phase["output_directory"])
@@ -131,19 +327,35 @@ def commit_checkpoint(plan, phase, completed, *, previous=None, finalized=False)
     if finalized and completed != ordered:
         raise ValueError("Cannot finalize an incomplete task stream")
     artifacts = output / "baseline_artifacts/metaweft"
-    memory = artifacts / (f"{completed[-1]}/memory_after.json"
-                          if completed and plan["setting"] != "direct" else "memory_initial.json")
-    snapshot = read_json(memory)
-    expected_status = "disabled" if plan["setting"] == "direct" else "verified"
-    if snapshot.get("status") != expected_status:
-        raise RuntimeError("Cannot commit a checkpoint without verified memory")
+    version = recovery_version(plan["setting"])
+    if plan.get("recovery_version", RECOVERY_VERSION) != version:
+        raise ValueError("Recovery format does not match the saved setting")
+    paired = version == PAIR_RECOVERY_VERSION
+    if paired:
+        memories = _pair_memories(completed)
+        sources = _validate_pair(plan, phase, completed, output, memories)
+        if previous:
+            preserved = {str(path.relative_to(output)) for path in sources}
+            preserved.add(memories["task"]["mapping"])
+            verify_files(output, {name: digest for name, digest in previous["files"].items() if name in preserved})
+        paths = [relative_file(output, item["snapshot"]) for item in memories.values()] + sources
+        _validate_task_artifacts(output, completed, paired=True)
+    else:
+        memory = artifacts / (f"{completed[-1]}/memory_after.json"
+                              if completed and plan["setting"] != "direct" else "memory_initial.json")
+        snapshot = read_json(memory)
+        expected_status = "disabled" if plan["setting"] == "direct" else "verified"
+        if snapshot.get("status") != expected_status:
+            raise RuntimeError("Cannot commit a checkpoint without verified memory")
+        paths = [memory]
     files = dict(previous["files"]) if previous else {}
-    paths = [memory]
     if previous is None and (output / "recovery_history").is_dir():
         paths.append(output / "recovery_history")
     if plan["setting"] != "direct":
         paths.append(artifacts / "memory_mapping.json")
     old_count = len(previous["completed_task_ids"]) if previous else 0
+    if previous and (previous["version"] != version or previous["identity"] != plan["recovery_identity"]):
+        raise ValueError("Previous checkpoint has a different recovery format or identity")
     if previous and previous["completed_task_ids"] != completed[:old_count]:
         raise ValueError("Checkpoint commits cannot remove or reorder completed tasks")
     for task_id in completed[old_count:]:
@@ -154,18 +366,26 @@ def commit_checkpoint(plan, phase, completed, *, previous=None, finalized=False)
         paths.extend(output / "tasks" / task_id / "evaluation" for task_id in completed)
     files.update(file_hashes(output, paths))
     checkpoint = {
-        "version": RECOVERY_VERSION, "identity": plan["recovery_identity"],
+        "version": version, "identity": plan["recovery_identity"],
         "ordered_task_ids": ordered, "completed_task_ids": list(completed),
         "next_task_id": ordered[len(completed)] if len(completed) < len(ordered) else None,
-        "memory_file": str(memory.relative_to(output)), "files": files,
+        "files": files,
         "finalized": finalized,
     }
+    if paired:
+        checkpoint.update(state_epoch=len(completed), memories=memories)
+        _validate_pair(plan, phase, completed, output, memories, files)
+    else:
+        checkpoint["memory_file"] = str(memory.relative_to(output))
     write_json(output / "checkpoint.json", checkpoint)
     return checkpoint
 
 
 def load_checkpoint(plan, phase, root):
     output = phase_output(root, phase)
+    version = recovery_version(plan["setting"])
+    if plan.get("recovery_version", RECOVERY_VERSION) != version:
+        raise ValueError("Recovery format does not match the saved setting")
     path = output / "checkpoint.json"
     if not path.is_file():
         # A phase may not yet have initialized its store or started any task.
@@ -174,7 +394,7 @@ def load_checkpoint(plan, phase, root):
             raise ValueError(f"Missing checkpoint for started tasks: {output}")
         return None
     checkpoint = read_json(path)
-    if checkpoint.get("version") != RECOVERY_VERSION or checkpoint.get("identity") != plan["recovery_identity"]:
+    if checkpoint.get("version") != version or checkpoint.get("identity") != plan["recovery_identity"]:
         raise ValueError(f"Incompatible checkpoint: {path}")
     completed, ordered = checkpoint["completed_task_ids"], phase["ordered_task_ids"]
     if (checkpoint["ordered_task_ids"] != ordered or len(completed) > len(ordered)
@@ -182,25 +402,25 @@ def load_checkpoint(plan, phase, root):
             or checkpoint["next_task_id"] != (ordered[len(completed)] if len(completed) < len(ordered) else None)):
         raise ValueError(f"Checkpoint task order differs: {path}")
     verify_files(output, checkpoint["files"])
-    memory_name = checkpoint["memory_file"]
-    expected_memory = "baseline_artifacts/metaweft/" + (
-        f"{completed[-1]}/memory_after.json" if completed and plan["setting"] != "direct" else "memory_initial.json")
-    if memory_name != expected_memory:
-        raise ValueError("Checkpoint memory does not match its completed task boundary")
-    if memory_name not in checkpoint["files"]:
-        raise ValueError(f"Checkpoint memory is not verified: {path}")
-    memory = read_json(relative_file(output, memory_name))
-    if memory.get("status") != ("disabled" if plan["setting"] == "direct" else "verified"):
-        raise ValueError(f"Checkpoint memory unavailable: {path}")
-    for task_id in completed:
-        for directory in ("dbs", "checkpoints", "logs", "evaluation", "version", "misc"):
-            path = output / "tasks" / task_id / directory
-            if not path.is_dir():
-                raise ValueError(f"Missing committed task directory: {path}")
-        for name in (f"baseline_artifacts/metaweft/{task_id}/result.json",
-                     f"tasks/{task_id}/logs/lm_calls.jsonl", f"tasks/{task_id}/evaluation/report.md"):
-            if name not in checkpoint["files"]:
-                raise ValueError(f"Checkpoint omits required task artifact: {name}")
+    paired = version == PAIR_RECOVERY_VERSION
+    if paired:
+        if type(checkpoint.get("state_epoch")) is not int or checkpoint["state_epoch"] != len(completed):
+            raise ValueError("Checkpoint pair epoch differs from completed task count")
+        if "memory_file" in checkpoint:
+            raise ValueError("Paired checkpoint must not contain a legacy memory pointer")
+        _validate_pair(plan, phase, completed, output, checkpoint.get("memories"), checkpoint["files"])
+    else:
+        memory_name = checkpoint["memory_file"]
+        expected_memory = "baseline_artifacts/metaweft/" + (
+            f"{completed[-1]}/memory_after.json" if completed and plan["setting"] != "direct" else "memory_initial.json")
+        if memory_name != expected_memory:
+            raise ValueError("Checkpoint memory does not match its completed task boundary")
+        if memory_name not in checkpoint["files"]:
+            raise ValueError(f"Checkpoint memory is not verified: {path}")
+        memory = read_json(relative_file(output, memory_name))
+        if memory.get("status") != ("disabled" if plan["setting"] == "direct" else "verified"):
+            raise ValueError(f"Checkpoint memory unavailable: {path}")
+    _validate_task_artifacts(output, completed, checkpoint["files"], paired=paired)
     if plan["setting"] != "direct" and "baseline_artifacts/metaweft/memory_mapping.json" not in checkpoint["files"]:
         raise ValueError("Checkpoint omits memory mapping")
     if checkpoint["finalized"]:
@@ -292,7 +512,7 @@ def validate_runtime(runtime):
 
 
 def validate_parent(plan, root):
-    if plan.get("recovery_version") != RECOVERY_VERSION or not plan.get("recovery_ready"):
+    if plan.get("recovery_version") != recovery_version(plan["setting"]) or not plan.get("recovery_ready"):
         raise ValueError("This run predates recovery support or never finished preparation; start a fresh run")
     if plan["status"] != "failed":
         raise ValueError("Recovery requires a failed run; active and completed runs cannot be recovered")
@@ -345,7 +565,8 @@ def select_parent(output_root, requested, target):
     if target == "latest":
         candidates = [(root, plan) for root, plan in manifests
                       if plan.get("selection") == requested and plan.get("status") == "failed"
-                      and plan.get("recovery_version") == RECOVERY_VERSION and plan.get("recovery_ready")]
+                      and plan.get("recovery_version") == recovery_version(plan.get("setting"))
+                      and plan.get("recovery_ready")]
         if not candidates:
             raise ValueError("No compatible failed new-format run found; start a fresh run or specify a run directory")
         eligible = [candidate for candidate in candidates if blocked_reason(candidate[1]) is None]
@@ -450,6 +671,7 @@ def clone_run(parent_root, plan, checkpoints):
             shutil.copy2(source / "checkpoint.json", output / "checkpoint.json")
         for name in ("run_manifest.json", "failure.json", "accounting.json", "runner_config.json",
                      "baseline_artifacts/metaweft/memory_final.json",
+                     "baseline_artifacts/metaweft/adaptation_memory_final.json",
                      "baseline_artifacts/metaweft/index.json"):
             if (source / name).is_file():
                 destination = archive / name
@@ -457,16 +679,28 @@ def clone_run(parent_root, plan, checkpoints):
                 shutil.copy2(source / name, destination)
         phase["degraded_task_ids"], phase["degraded_reasons"] = [], {}
         phase["evidence_gaps"] = []
+        if plan["setting"] == "metaweft_v1":
+            phase["memory_branch_results"] = {}
         for task_id in phase["completed_task_ids"]:
             result = read_json(artifacts / task_id / "result.json")
             if result["degraded"]:
                 phase["degraded_task_ids"].append(task_id)
                 phase["degraded_reasons"][task_id] = result["degraded"]
+            if plan["setting"] == "metaweft_v1":
+                phase["memory_branch_results"][task_id] = result["stages"]["update"]
+        if plan["setting"] == "metaweft_v1" and checkpoint:
+            from MetaWeft.src.ace_adapt_reme_task.adaptation_memory import render_playbook
+            snapshot = read_json(relative_file(output, checkpoint["memories"]["adaptation"]["snapshot"]))
+            playbook = restore_adaptation(snapshot)
+            phase["adaptation_memory"] = {"entries": len(playbook["entries"]), "revision": playbook["revision"],
+                                          "rendered_bytes": len(render_playbook(playbook).encode("utf-8"))}
         if phase["status"] == "completed" and (source / "run_manifest.json").is_file():
             saved = read_json(source / "run_manifest.json")
             phase["evidence_gaps"] = saved.get("evidence_gaps", [])
             phase["final_memory_status"] = saved.get("final_memory_status")
-            for name in ("memory_final.json",):
+            if plan["setting"] == "metaweft_v1":
+                phase["final_adaptation_memory_status"] = saved.get("final_adaptation_memory_status")
+            for name in ("memory_final.json", "adaptation_memory_final.json"):
                 if (source / "baseline_artifacts/metaweft" / name).is_file():
                     shutil.copy2(source / "baseline_artifacts/metaweft" / name, artifacts / name)
         write_json(output / "run_manifest.json", {
