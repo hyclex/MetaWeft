@@ -19,6 +19,10 @@ class CollectorTests(unittest.TestCase):
         (self.workspace / "tool").mkdir()
         (self.workspace / "raw_logs").mkdir()
         shutil.copy2(WORKSPACE / "tool/collect_appworld.sh", self.workspace / "tool")
+        package = self.workspace / "MetaWeft/experiment"
+        package.mkdir(parents=True)
+        for name in ("__init__.py", "cost.py", "recovery.py"):
+            shutil.copy2(WORKSPACE / "MetaWeft/experiment" / name, package / name)
 
     def write_json(self, path, value):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +168,25 @@ class CollectorTests(unittest.TestCase):
         report, _ = self.collect()
         self.assertIn("recovered from failed-parent; reused 1 tasks", report)
         self.assertIn("ETA estimating (no new tasks completed)", report)
+
+    def test_cost_column_prices_all_baselines_and_marks_partial_running_usage(self):
+        for baseline in ("ace", "reme", "metaweft"):
+            _, output = self.add_run(baseline, status="running", phase_diagnostics={"status": "running"})
+            path = output / "tasks/one_1/logs/lm_calls.jsonl"
+            path.parent.mkdir(parents=True)
+            calls = [
+                {"id": "paid", "input": {"model": "qwen3.8-flash"},
+                 "output": {"usage": {"prompt_tokens": 1000000, "completion_tokens": 100000,
+                                      "prompt_tokens_details": {"cached_tokens": 250000}}}},
+                {"id": "failed", "input": {"model": "qwen3.8-flash"}, "output": {"error": "timeout"}},
+            ]
+            path.write_text("".join(json.dumps(call) + "\n" for call in calls))
+        report, _ = self.collect()
+        self.assertEqual(report.count("Estimated cost (USD)"), 3)
+        self.assertEqual(report.count("[$0.71600000]"), 3)
+        self.assertEqual(report.count("partial (1 unpriced calls); so far"), 3)
+        for baseline in ("ace", "reme", "metaweft"):
+            self.assertIn(f"../raw_logs/{baseline}-base/experiment/output/run/experiments/outputs/test/cost_estimate.json", report)
 
 
 if __name__ == "__main__":

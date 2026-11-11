@@ -15,18 +15,24 @@ from .task_memory import TaskMemory
 
 
 class V1Pipeline:
+    prompt_directory = PROMPTS
+    adapter_class = Adapter
+    adaptation_memory_class = AdaptationMemory
+    adaptation_schema = ADAPTATION_SCHEMA
+    component_prefix = "metaweft_v1"
+
     def __init__(self, store, run_root, prompts=None, *, retrieval_k=10, retrieval_meta=None,
                  playbook=None, task_state_ref=None, adaptation_state_ref=None,
                  full_prompt_max_bytes=FULL_PROMPT_MAX_BYTES):
         self.run_root = Path(run_root).resolve()
-        self.prompts = Path(prompts) if prompts else PROMPTS
+        self.prompts = Path(prompts) if prompts else self.prompt_directory
         self.templates = {name: (self.prompts / f"{name}.txt").read_text() for name in
                           ("adaptation", "task_extraction", "task_consolidation", "adaptation_update")}
         self.task_channel = TaskMemory(store, self.run_root, self.templates, retrieval_k=retrieval_k,
                                        retrieval_meta=retrieval_meta, max_bytes=full_prompt_max_bytes)
-        self.adaptation_channel = AdaptationMemory(self.run_root, self.templates, playbook,
-                                                   max_bytes=full_prompt_max_bytes)
-        adapter = Adapter(self.run_root, self.templates["adaptation"], max_bytes=full_prompt_max_bytes)
+        self.adaptation_channel = self.adaptation_memory_class(self.run_root, self.templates, playbook,
+                                                               max_bytes=full_prompt_max_bytes)
+        adapter = self.adapter_class(self.run_root, self.templates["adaptation"], max_bytes=full_prompt_max_bytes)
         self.framework = DualMemoryPipeline(self.task_channel, self.adaptation_channel, adapter)
         self.store, self.retrieval_meta, self.retrieval_k = store, self.task_channel.retrieval_meta, retrieval_k
         self.prior_pair = None
@@ -42,7 +48,7 @@ class V1Pipeline:
                 "adaptation": adaptation if isinstance(adaptation, StateRef) else StateRef(**adaptation)}
         if pair["task"].stream_id != pair["adaptation"].stream_id or pair["task"].epoch != pair["adaptation"].epoch:
             raise ValueError("Prior memory pair must share stream and epoch")
-        for role, schema in (("task", TASK_SCHEMA), ("adaptation", ADAPTATION_SCHEMA)):
+        for role, schema in (("task", TASK_SCHEMA), ("adaptation", self.adaptation_schema)):
             ref = pair[role]
             if (ref.role != role or ref.schema != schema or type(ref.epoch) is not int or ref.epoch < 0
                     or not isinstance(ref.stream_id, str) or not ref.stream_id):
@@ -68,7 +74,7 @@ class V1Pipeline:
     def prepare_context(self, task_spec, *, llm, artifacts, trace_context=None, call_refs=None, retrieval_llm=None):
         self._verify_pair()
         services = {"llm": llm, "retrieval_llm": retrieval_llm, "call_refs": call_refs if call_refs is not None else {},
-                    "trace_context": trace_context or {}}
+                    "trace_context": trace_context or {}, "component_prefix": self.component_prefix}
         return self.framework.prepare(task_view(task_spec), self.prior_pair, services=services, artifacts=artifacts)
 
     def post_task(self, evidence, *, prepared, llm, artifacts, call_refs=None):
@@ -110,7 +116,8 @@ class V1Pipeline:
             write_json(artifacts / "pair_update_status.json", value)
 
         result = self.framework.update(episode, self.prior_pair,
-                                       services={"llm": llm, "call_refs": call_refs if call_refs is not None else {}},
+                                       services={"llm": llm, "call_refs": call_refs if call_refs is not None else {},
+                                                 "component_prefix": self.component_prefix},
                                        artifacts=artifacts, record_failure=record_failure)
         write_json(artifacts / "pair_update_status.json", result.to_dict())
         return result

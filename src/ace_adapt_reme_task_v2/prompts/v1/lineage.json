@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "design": "V2 derives from dual-memory V1; task policy and executor prompts unchanged.",
+  "parent_variant": "metaweft-ace-adapt-reme-task-v1",
+  "parents": [
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/adapter.py",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "7061eb1ca7f5ef2b8fa592876fea02d85cb7cc5f01b659da62df21d5759dce6f",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/adapter.py"
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/adaptation_memory.py",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "a35d263a5523f6185c472addce02aded8163220a259e849f9962df21d3cad0a2",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/adaptation_memory.py"
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/evidence.py",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "bebb87eb7fc581434a92cab622c5c3fab1147b0d1c0543f1ab1065c5a83d282f",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/evidence.py"
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/pipeline.py",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "d7daac16a8e6a7803221a76a9d1f3feb5d109e6450d454a0c482b76f717b22ff",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/pipeline.py",
+      "shared_working_dependency": {
+        "captured_path": "shared_dependencies/MetaWeft/src/ace_adapt_reme_task/pipeline.py",
+        "sha256": "3d4cd3319cb654e952a4ef8ba0275d2e14dc0f959d3ee31e0c0423b19b364355",
+        "note": "Shared compatibility hooks are local implementation changes, not parent revision content."
+      }
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/common.py",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "e9d15de0f0f545af79bb9ffa97d18284e9c3f9508c0b79fe93e74eec4543449a",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/common.py",
+      "shared_working_dependency": {
+        "captured_path": "shared_dependencies/MetaWeft/src/ace_adapt_reme_task/common.py",
+        "sha256": "71cff6d4f0b1f40c908526f43fc8c1a4ea314bf847327de831ced6ea78fa805b",
+        "note": "Shared compatibility hooks are local implementation changes, not parent revision content."
+      }
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/task_memory.py",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "9728e18e25629e289ac79f2d136d467fff36af892280b678c910026d6a92dfff",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/task_memory.py",
+      "shared_working_dependency": {
+        "captured_path": "shared_dependencies/MetaWeft/src/ace_adapt_reme_task/task_memory.py",
+        "sha256": "641b05feff6ce44e6c5249e91c65f9ae72eaf2674f561b725743ec693cdf7378",
+        "note": "Shared compatibility hooks are local implementation changes, not parent revision content."
+      }
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/config.py",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "41ab7e17fd07beeabfb7bd266f57cac2d60c789f0ee09ecb3ac702994f6753e3",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/config.py"
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/prompts/v1/adaptation.txt",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "12901d8be3620f873bf4fa2bf054f197eba2ec1f63531007734508bf481ba602",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/prompts/v1/adaptation.txt"
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/prompts/v1/adaptation_update.txt",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "b90ac09db08370109d1278d5b636a3de71522d34e629190a5db52c21d9f6501f",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/prompts/v1/adaptation_update.txt"
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/prompts/v1/task_extraction.txt",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "a7fcfd416cea8c39c862c6555ca6eaaeb6c7537274d1bdfa7d6da0563fbbe6c7",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/prompts/v1/task_extraction.txt"
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/prompts/v1/task_consolidation.txt",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "38fde1f6e4c391eaf52c03c43eb67c0d7585edf873a23208448a19dcdc61438d",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/prompts/v1/task_consolidation.txt"
+    },
+    {
+      "checkout": "MetaWeft",
+      "path": "src/ace_adapt_reme_task/prompts/v1/execution_base.txt",
+      "revision": "1abb3419b94106b9c413575d72f372206af86d53",
+      "sha256": "3c719f7c37a6bc777fcc19f2d0759e3926925eb3bab7227ae61f80843f5df889",
+      "captured_path": "parents/MetaWeft/src/ace_adapt_reme_task/prompts/v1/execution_base.txt"
+    }
+  ],
+  "transformations": {
+    "adaptation": "Only memory content enters adapter; new three-heading playbook role.",
+    "adaptation_update": "Successful completed calls only; frozen adapter input/output instead of execution trajectories.",
+    "task_extraction.txt": "Byte-identical parent prompt.",
+    "task_consolidation.txt": "Byte-identical parent prompt.",
+    "execution_base.txt": "Byte-identical parent prompt."
+  },
+  "shared_dependencies": [
+    "MetaWeft.src.ace_adapt_reme_task.pipeline.V1Pipeline",
+    "MetaWeft.src.ace_adapt_reme_task.task_memory.TaskMemory",
+    "MetaWeft.src.ace_adapt_reme_task.common",
+    "MetaWeft.src.framework",
+    "MetaWeft.src.memory_retrieval",
+    "MetaWeft.service",
+    "MetaWeft.experiment.appworld"
+  ]
+}

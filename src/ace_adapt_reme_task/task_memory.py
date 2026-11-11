@@ -95,7 +95,7 @@ class TaskMemory:
     select_evidence = staticmethod(select_task_evidence)
 
     def _embed(self, llm, value, event, services):
-        component = "metaweft_v1.task_embedding"
+        component = f"{services.get('component_prefix', 'metaweft_v1')}.task_embedding"
         refs = services.get("call_refs", {})
         start = len(refs.get(component, []))
         try:

@@ -2,8 +2,8 @@
 
 ## Ownership and lineage
 
-The entrypoints select `base`, `direct`, or a compatible retrieval preset through
-`retrieval.py --preset NAME`. The launcher owns fresh and recovered run
+The entrypoints select `base`, `direct`, `metaweft_v1`, `metaweft_v2`, or a
+compatible retrieval preset through `retrieval.py --preset NAME`. The launcher owns fresh and recovered run
 identity, task selection, source snapshots, runtime isolation, and phase
 processes. The worker owns benchmark integration and finalization. Variant code
 owns memory policy; generic services own provider and store operations.
@@ -134,6 +134,16 @@ subtotals distinguish newly incurred usage. Malformed response envelopes count a
 unknown usage when no numeric usage is reported. Collector rows label recovery
 lineage and reused tasks; ETA uses newly completed tasks in the current attempt.
 
+Cost estimation uses `experiment/cost.py`, migrated from the sibling ReMe formal
+accounting formula. Its pinned historical chat and embedding rates are recorded
+with estimates and captured with new runs. This changes reporting only; model
+requests, memory policies and task controls are unchanged. Cost parity is checked
+against the parent calculation offline. Partial estimates retain unpriced-call
+counts; they never imply missing usage was free. The collector/backfill writes a
+derived `cost_estimate.json` beside each phase, preserving original accounting
+and sealed recovery evidence. It refreshes growing logs from older captured
+workers without modifying their source or requiring an experimental restart.
+
 The invocation manifest uses `baseline=metaweft` and a `setting` of `base`, `direct`,
 or the selected retrieval preset, with
 phases retaining the established `ordered_task_ids`, `source_task_count`,
@@ -153,3 +163,24 @@ acceptance uses the same two Quick2h normal tasks for both settings, preserves
 actual task outcomes, and verifies complete run artifacts. Two successful launches
 alone do not establish that every consolidation operation occurred or that memory
 improved performance.
+
+## V2 variant integration
+
+`metaweft_v2` is a separate setting and recovery family derived from V1. Its
+content-only adapter inputs, success-gated adaptation input/output evidence and
+three adaptation headings belong to its policy package. The shared worker keeps
+AppWorld task loading, execution, official scoring and canonical call logging
+unchanged. Official scalar reward 1.0 determines adaptation-update eligibility;
+the environment's completion signal does not replace evaluator success.
+
+Both dual-memory variants use paired checkpoint format 2. Task memory keeps its
+V1 schema, while V2 adaptation snapshots carry `metaweft-adaptation-memory-v2` and
+schema-version 2 playbooks. Snapshot validation, restoration, state references
+and rendering select the saved variant's schema without weakening V1 checks.
+An adaptation skip still writes its branch artifact and advances the pair epoch
+when the task commits. No V1-to-V2 recovery or playbook migration is provided.
+
+V2's descriptor, owned prompts, shared policy dependencies and local working
+changes are included in every recoverable source snapshot. Run identity prevents
+recovery across settings; captured defaults take precedence over current files.
+The existing generic collector discovers V2 by its saved setting and artifacts.

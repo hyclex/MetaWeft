@@ -21,6 +21,7 @@ ideas are not additional implementation requirements.
 | `src/base/` | The reference memory representation and retrieve/adapt/reflect/consolidate policy. |
 | `src/framework/` | Explicit prepared inputs, episode evidence, and independent memory update contracts. |
 | `src/ace_adapt_reme_task/` | Dual-memory V1: ReMe-like task knowledge, a full ACE-derived adaptation playbook, and one fixed guide. |
+| `src/ace_adapt_reme_task_v2/` | Dual-memory V2: content-only adapter inputs and playbook learning from successful adapter input/output examples. |
 | `src/memory_retrieval/` | Shared query generation, HNSW/exact search, RRF fusion, optional ranking, versioned presets, and retrieval traces. |
 | `src/base/prompts/` | Explicit, versioned prompts owned by the baseline. |
 | `experiment/appworld/` | Thin setting entrypoints, AppWorld execution integration, run lifecycle, and adjacent variant descriptors. |
@@ -42,6 +43,7 @@ Run commands from the workspace root containing `MetaWeft/`,
 bash MetaWeft/experiment/appworld/run.sh base --dataset 2h --split test-normal --limit 2 --dry-run
 bash MetaWeft/experiment/appworld/run.sh direct --dataset 2h --split test-normal --limit 2 --dry-run
 bash MetaWeft/experiment/appworld/run.sh metaweft_v1 --dataset 2h --split test-normal --limit 2 --dry-run
+bash MetaWeft/experiment/appworld/run.sh metaweft_v2 --dataset 2h --split test-normal --limit 2 --dry-run
 ```
 
 See the [experiment command catalog](experiment/README.md) for offline checks,
@@ -111,3 +113,12 @@ run artifacts; no performance claim follows from the framework's existence.
 
 The [v1 validation record](experiment/appworld/VALIDATION.md) links the two-task
 live runs, the retained degraded attempt, and offline check coverage.
+
+`metaweft_v2` is a separate child of `metaweft_v1`. Its adapter receives task-memory
+content and the complete playbook's rule content without memory bookkeeping.
+The playbook covers memory selection, task-specific pruning, and exploration
+guidance. Only full official success permits playbook learning, using the frozen
+adapter input and output without execution trajectories. Task-memory learning
+still uses both successful and unsuccessful episodes. See the
+[V2 policy](src/ace_adapt_reme_task_v2/DESIGNS.md) and
+[variant descriptor](experiment/appworld/metaweft_v2.variant.json).

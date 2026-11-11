@@ -17,11 +17,15 @@ from pathlib import Path
 import shutil
 import tempfile
 
+from MetaWeft.experiment.cost import PRICING, summarize_cost
+
 
 RECOVERY_VERSION = 1
 PAIR_RECOVERY_VERSION = 2
 TASK_MEMORY_SCHEMA = "metaweft-task-memory-v1"
 ADAPTATION_MEMORY_SCHEMA = "metaweft-adaptation-memory-v1"
+ADAPTATION_MEMORY_V2_SCHEMA = "metaweft-adaptation-memory-v2"
+DUAL_MEMORY_SETTINGS = ("metaweft_v1", "metaweft_v2")
 V1_TASK_ARTIFACTS = (
     "task_spec.json", "retrieval.json", "adaptation_preparation.json", "adaptation_event.json",
     "context.json", "trace.jsonl", "evidence.json", "episode_evidence.json",
@@ -31,7 +35,25 @@ V1_TASK_ARTIFACTS = (
 
 
 def recovery_version(setting):
-    return PAIR_RECOVERY_VERSION if setting == "metaweft_v1" else RECOVERY_VERSION
+    return PAIR_RECOVERY_VERSION if setting in DUAL_MEMORY_SETTINGS else RECOVERY_VERSION
+
+
+def adaptation_schema(setting):
+    return ADAPTATION_MEMORY_V2_SCHEMA if setting == "metaweft_v2" else ADAPTATION_MEMORY_SCHEMA
+
+
+def _adaptation_module(schema):
+    if schema == ADAPTATION_MEMORY_SCHEMA:
+        from MetaWeft.src.ace_adapt_reme_task import adaptation_memory
+    elif schema == ADAPTATION_MEMORY_V2_SCHEMA:
+        from MetaWeft.src.ace_adapt_reme_task_v2 import adaptation_memory
+    else:
+        raise ValueError("Unsupported adaptation snapshot schema")
+    return adaptation_memory
+
+
+def render_adaptation(playbook, setting):
+    return _adaptation_module(adaptation_schema(setting)).render_playbook(playbook)
 
 
 def stream_id(plan, phase):
@@ -175,7 +197,7 @@ def _validate_task_records(records, dimensions):
 def _snapshot_wrapper(role, plan, phase, epoch):
     if type(epoch) is not int or epoch < 0:
         raise ValueError("Pair epoch must be a nonnegative integer")
-    return {"role": role, "schema": TASK_MEMORY_SCHEMA if role == "task" else ADAPTATION_MEMORY_SCHEMA,
+    return {"role": role, "schema": TASK_MEMORY_SCHEMA if role == "task" else adaptation_schema(plan["setting"]),
             "stream_id": stream_id(plan, phase), "state_epoch": epoch, "status": "verified"}
 
 
@@ -189,7 +211,7 @@ def snapshot_task_v2(store, path, plan, phase, epoch, task_id=None):
 
 
 def snapshot_adaptation_v2(playbook, path, plan, phase, epoch, task_id=None):
-    from MetaWeft.src.ace_adapt_reme_task.adaptation_memory import validate_playbook
+    validate_playbook = _adaptation_module(adaptation_schema(plan["setting"])).validate_playbook
     snapshot = {**_snapshot_wrapper("adaptation", plan, phase, epoch),
                 "playbook": validate_playbook(playbook)}
     if snapshot["playbook"]["revision"] > epoch:
@@ -199,11 +221,10 @@ def snapshot_adaptation_v2(playbook, path, plan, phase, epoch, task_id=None):
 
 
 def restore_adaptation(snapshot):
-    from MetaWeft.src.ace_adapt_reme_task.adaptation_memory import validate_playbook
     if (snapshot.get("status") != "verified" or snapshot.get("role") != "adaptation"
-            or snapshot.get("schema") != ADAPTATION_MEMORY_SCHEMA):
+            or snapshot.get("schema") not in (ADAPTATION_MEMORY_SCHEMA, ADAPTATION_MEMORY_V2_SCHEMA)):
         raise ValueError("Cannot restore an unverified adaptation snapshot")
-    playbook = validate_playbook(snapshot["playbook"])
+    playbook = _adaptation_module(snapshot["schema"]).validate_playbook(snapshot["playbook"])
     if playbook != snapshot["playbook"]:
         raise ValueError("Restored playbook differs from its checkpoint")
     return playbook
@@ -296,7 +317,7 @@ def state_refs(plan, phase, checkpoint):
     if checkpoint["version"] != PAIR_RECOVERY_VERSION:
         raise ValueError("State references require a paired checkpoint")
     output, root = Path(phase["output_directory"]), Path(plan["run_directory"])
-    return {role: {"role": role, "schema": TASK_MEMORY_SCHEMA if role == "task" else ADAPTATION_MEMORY_SCHEMA,
+    return {role: {"role": role, "schema": TASK_MEMORY_SCHEMA if role == "task" else adaptation_schema(plan["setting"]),
                    "stream_id": stream_id(plan, phase), "epoch": checkpoint["state_epoch"],
                    "snapshot": str((output / reference["snapshot"]).relative_to(root)),
                    "sha256": checkpoint["files"][reference["snapshot"]]}
@@ -484,13 +505,13 @@ def accounting(output):
             tokens.update(reported)
         return {"recorded_calls": sum(phases.values()), "recorded_calls_by_phase": dict(phases),
                 "cache_hits": sum(cache_phases.values()), "cache_hits_by_phase": dict(cache_phases),
-                "reported_tokens": dict(tokens), "missing_usage_calls": missing, "cost_usd": None}
+                "reported_tokens": dict(tokens), "missing_usage_calls": missing, **summarize_cost(calls)}
 
     result = totals(list(records.values()))
     result.update(
         current_attempt=totals([record for key, record in records.items() if key not in inherited]),
         inherited=totals([records[key] for key in inherited]),
-        pricing_assumptions="Provider rates unverified; unknown is not zero.",
+        pricing_assumptions=PRICING,
         coverage="Cumulative distinct physical calls across all stages and recovery attempts; "
                  "cache replays counted separately with no incurred provider usage; no billed preflight.",
         retry_coverage="SDK retries disabled; explicit attempt budget recorded in resolved settings.",
@@ -679,26 +700,25 @@ def clone_run(parent_root, plan, checkpoints):
                 shutil.copy2(source / name, destination)
         phase["degraded_task_ids"], phase["degraded_reasons"] = [], {}
         phase["evidence_gaps"] = []
-        if plan["setting"] == "metaweft_v1":
+        if plan["setting"] in DUAL_MEMORY_SETTINGS:
             phase["memory_branch_results"] = {}
         for task_id in phase["completed_task_ids"]:
             result = read_json(artifacts / task_id / "result.json")
             if result["degraded"]:
                 phase["degraded_task_ids"].append(task_id)
                 phase["degraded_reasons"][task_id] = result["degraded"]
-            if plan["setting"] == "metaweft_v1":
+            if plan["setting"] in DUAL_MEMORY_SETTINGS:
                 phase["memory_branch_results"][task_id] = result["stages"]["update"]
-        if plan["setting"] == "metaweft_v1" and checkpoint:
-            from MetaWeft.src.ace_adapt_reme_task.adaptation_memory import render_playbook
+        if plan["setting"] in DUAL_MEMORY_SETTINGS and checkpoint:
             snapshot = read_json(relative_file(output, checkpoint["memories"]["adaptation"]["snapshot"]))
             playbook = restore_adaptation(snapshot)
             phase["adaptation_memory"] = {"entries": len(playbook["entries"]), "revision": playbook["revision"],
-                                          "rendered_bytes": len(render_playbook(playbook).encode("utf-8"))}
+                                          "rendered_bytes": len(render_adaptation(playbook, plan["setting"]).encode("utf-8"))}
         if phase["status"] == "completed" and (source / "run_manifest.json").is_file():
             saved = read_json(source / "run_manifest.json")
             phase["evidence_gaps"] = saved.get("evidence_gaps", [])
             phase["final_memory_status"] = saved.get("final_memory_status")
-            if plan["setting"] == "metaweft_v1":
+            if plan["setting"] in DUAL_MEMORY_SETTINGS:
                 phase["final_adaptation_memory_status"] = saved.get("final_adaptation_memory_status")
             for name in ("memory_final.json", "adaptation_memory_final.json"):
                 if (source / "baseline_artifacts/metaweft" / name).is_file():

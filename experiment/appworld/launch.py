@@ -24,7 +24,7 @@ sys.path.insert(0, str(WORKSPACE))
 from runtime_paths import PROVIDER_FILE, isolated_environment, load_runtime
 from reproduce import DATASETS, find_data, sha256, snapshot_source, task_ids
 from MetaWeft.experiment.recovery import (
-    RECOVERY_VERSION, add_recovery_argument, clone_run, recovery_lock, recovery_plan,
+    DUAL_MEMORY_SETTINGS, add_recovery_argument, clone_run, recovery_lock, recovery_plan, recovery_version,
     seal_run, select_parent, selection, write_json,
 )
 from MetaWeft.service.llm.config import cache_settings, retry_defaults
@@ -47,7 +47,7 @@ RETRIEVAL_PRESETS = (
 
 
 def parse_args(setting, argv=None):
-    parser = argparse.ArgumentParser(description=f"MetaWeft {setting} v1")
+    parser = argparse.ArgumentParser(description=f"MetaWeft {setting}")
     if setting == "retrieval":
         parser.add_argument("--preset", choices=RETRIEVAL_PRESETS, required=True)
     parser.add_argument("--dataset", choices=DATASETS, required=True)
@@ -118,12 +118,15 @@ def make_plan(setting, args):
     elif setting == "metaweft_v1":
         from MetaWeft.src.ace_adapt_reme_task.config import v1_settings
         settings.update(v1_settings())
+    elif setting == "metaweft_v2":
+        from MetaWeft.src.ace_adapt_reme_task_v2.config import v2_settings
+        settings.update(v2_settings())
     elif setting != "direct":
         settings["retrieval_meta"] = load_preset(setting)
         settings["retrieval_candidates"] = settings["retrieval_meta"]["search"]["num_candidates"]
     return {
         "baseline": "metaweft", "setting": setting, "setting_id": setting_id,
-        "variant_id": ("metaweft-ace-adapt-reme-task-v1" if setting == "metaweft_v1"
+        "variant_id": (f"metaweft-ace-adapt-reme-task-{setting.rsplit('_', 1)[1]}" if setting in DUAL_MEMORY_SETTINGS
                        else f"metaweft-{setting}-v1"), "run_id": f"{setting_id}-{tag}",
         "run_tag": tag, "run_directory": str(root), "dataset_version": args.dataset,
         "scenario": "direct" if setting == "direct" else "cold-start", "split": args.split,
@@ -132,7 +135,7 @@ def make_plan(setting, args):
         "partial": any(p["partial"] for p in phases), "repetitions": 1,
         "task_order": "manifest order", "memory_reset": "empty independently for each split",
         "settings": settings, "command": [sys.executable, *sys.argv],
-        "recovery_version": 2 if setting == "metaweft_v1" else RECOVERY_VERSION,
+        "recovery_version": recovery_version(setting),
         "recovery_ready": False,
         "selection": selection(setting, args), "created_at": datetime.now(timezone.utc).isoformat(),
         "degraded_task_ids": [], "degraded_reasons": {}, "evidence_gaps": [],
@@ -158,7 +161,7 @@ def prepare(plan, args, runtime):
                                    for p in sorted(framework.rglob("*")) if p.is_file()}
     provenance["metaweft_source"] = "source/MetaWeft: copied current working files"
     write_json(root / "source_provenance.json", provenance)
-    if plan["setting"] in ("base", "direct", "metaweft_v1"):
+    if plan["setting"] in ("base", "direct", *DUAL_MEMORY_SETTINGS):
         shutil.copy2(ENTRY / f"{plan['setting']}.variant.json", root / "variant.json")
     else:
         descriptor = json.loads((framework / "experiment/appworld/retrieval.variant.json").read_text())
@@ -398,7 +401,7 @@ def main(setting, argv=None):
         plan["degraded_reasons"] = {task: reasons for phase in plan["phases"]
                                     for task, reasons in phase.get("degraded_reasons", {}).items()}
         plan["evidence_gaps"] = [gap for phase in plan["phases"] for gap in phase.get("evidence_gaps", [])]
-        if setting == "metaweft_v1":
+        if setting in DUAL_MEMORY_SETTINGS:
             plan["memory_branch_results"] = {task: result for phase in plan["phases"]
                                                for task, result in phase.get("memory_branch_results", {}).items()}
             plan["adaptation_memory"] = {phase["split"]: phase["adaptation_memory"]

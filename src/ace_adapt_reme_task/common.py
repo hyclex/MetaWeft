@@ -1,4 +1,4 @@
-"""Strict JSON/model-call helpers shared only by the V1 memory stages."""
+"""Strict JSON/model-call helpers shared by the dual-memory variants."""
 
 from copy import deepcopy
 import hashlib
@@ -55,7 +55,7 @@ def sha_text(value):
 def call_model(name, template, payload, *, services, event, save, max_bytes=FULL_PROMPT_MAX_BYTES):
     messages = [{"role": "system", "content": template},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False, allow_nan=False)}]
-    component = f"metaweft_v1.{name}"
+    component = f"{services.get('component_prefix', 'metaweft_v1')}.{name}"
     started = time.monotonic()
     prior_calls = len(services.get("call_refs", {}).get(component, []))
     llm = services["llm"]

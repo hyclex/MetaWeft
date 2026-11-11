@@ -22,6 +22,7 @@ from MetaWeft.experiment.appworld.executor import execute
 from MetaWeft.experiment.recovery import (
     accounting, commit_checkpoint, load_checkpoint, read_json, relative_file, restore_memory, write_json,
     restore_adaptation, snapshot_adaptation_v2, snapshot_task_v2, state_refs,
+    DUAL_MEMORY_SETTINGS, render_adaptation,
 )
 from MetaWeft.service.llm import LLMCacheError, LLMUnavailableError, ModelClient
 from MetaWeft.service.llm.cache import restore_pending_responses
@@ -99,11 +100,12 @@ class MetaWeftAdapter:
         self.plan, self.phase, self.manifest = plan, phase, manifest
         self.pipeline, self.store = pipeline, store
         self.output = Path(phase["output_directory"])
-        self.v1 = plan["setting"] == "metaweft_v1"
-        policy = "ace_adapt_reme_task" if self.v1 else "base"
+        self.dual_memory = plan["setting"] in DUAL_MEMORY_SETTINGS
+        policy = ("ace_adapt_reme_task_v2" if plan["setting"] == "metaweft_v2"
+                  else "ace_adapt_reme_task" if self.dual_memory else "base")
         self.prompts = Path(plan["source_framework"]) / f"src/{policy}/prompts/v1"
         self.checkpoint = read_json(self.output / "checkpoint.json")
-        if self.v1:
+        if self.dual_memory:
             self.set_committed_pair()
 
     def set_committed_pair(self):
@@ -115,7 +117,7 @@ class MetaWeftAdapter:
         root = Path(self.plan["run_directory"])
         bank = self.output / "baseline_artifacts/metaweft"
         settings = self.plan["settings"]
-        memory_file = (self.checkpoint["memories"]["task"]["snapshot"] if self.v1
+        memory_file = (self.checkpoint["memories"]["task"]["snapshot"] if self.dual_memory
                        else self.checkpoint["memory_file"])
         result = {
             "bank": {
@@ -137,7 +139,7 @@ class MetaWeftAdapter:
                                                        ("max_retries", "retry_delay_seconds")})},
             "prompts": prompt_manifest(self.pipeline.retrieval_meta),
         }
-        if self.v1:
+        if self.dual_memory:
             result["prior_pair"] = state_refs(self.plan, self.phase, self.checkpoint)
         return result
 
@@ -187,7 +189,7 @@ class MetaWeftAdapter:
                                                          call_refs=call_refs, retrieval_llm=retrieval_model)
                 guidance = prepared.guidance
                 stages["context"] = prepared.to_dict()
-                if self.v1:
+                if self.dual_memory:
                     stages["context"]["retrieved_ids"] = [record["id"] for record in prepared.task_prepared.payload]
                 if prepared.degraded:
                     degraded.append({"stage": "context", "reason": prepared.error})
@@ -218,12 +220,12 @@ class MetaWeftAdapter:
             evidence = {"task_spec": spec, "trace": trace, "reward": reward}
             write_json(artifacts / "evidence.json", evidence)
             if self.pipeline:
-                update_options = {"prepared": prepared, "call_refs": call_refs} if self.v1 else {}
+                update_options = {"prepared": prepared, "call_refs": call_refs} if self.dual_memory else {}
                 updated = self.pipeline.post_task(evidence, llm=model, artifacts=artifacts, **update_options)
                 stages["update"] = updated.to_dict()
                 if updated.degraded:
                     degraded.append({"stage": "update", "reason": updated.error})
-                if self.v1:
+                if self.dual_memory:
                     epoch = len(self.checkpoint["completed_task_ids"]) + 1
                     snapshot_task_v2(self.store, artifacts / "memory_after.json", self.plan, self.phase, epoch)
                     snapshot_adaptation_v2(self.pipeline.playbook, artifacts / "adaptation_memory_after.json",
@@ -250,14 +252,13 @@ class MetaWeftAdapter:
                 sink = None
             completed_ids = [*self.manifest["completed_task_ids"], context.task_id]
             self.checkpoint = commit_checkpoint(self.plan, self.phase, completed_ids, previous=self.checkpoint)
-            if self.v1:
+            if self.dual_memory:
                 self.set_committed_pair()
-                from MetaWeft.src.ace_adapt_reme_task import render_playbook
                 self.manifest.setdefault("memory_branch_results", {})[context.task_id] = stages["update"]
                 self.manifest["adaptation_memory"] = {
                     "entries": len(self.pipeline.playbook["entries"]),
                     "revision": self.pipeline.playbook["revision"],
-                    "rendered_bytes": len(render_playbook(self.pipeline.playbook).encode("utf-8")),
+                    "rendered_bytes": len(render_adaptation(self.pipeline.playbook, self.plan["setting"]).encode("utf-8")),
                 }
             self.manifest["completed_task_ids"] = completed_ids
             self.manifest["current_task_id"] = None
@@ -282,7 +283,7 @@ def main():
     output = Path(phase["output_directory"])
     output.mkdir(parents=True, exist_ok=bool(plan.get("recovery")))
     checkpoint = load_checkpoint(plan, phase, Path(plan["run_directory"]))
-    v1 = plan["setting"] == "metaweft_v1"
+    dual_memory = plan["setting"] in DUAL_MEMORY_SETTINGS
     manifest = {**phase, "baseline": "metaweft", "setting": plan["setting"], "variant_id": plan["variant_id"],
                 "run_id": plan["run_id"], "scenario": plan["scenario"], "dataset_version": plan["dataset_version"],
                 "note": plan["note"], "status": "running", "started_at": now(),
@@ -290,7 +291,7 @@ def main():
                 "degraded_task_ids": list(phase.get("degraded_task_ids", [])),
                 "degraded_reasons": dict(phase.get("degraded_reasons", {})), "evidence_gaps": [],
                 "recovery": plan.get("recovery")}
-    if v1:
+    if dual_memory:
         manifest["memory_branch_results"] = dict(phase.get("memory_branch_results", {}))
         manifest["adaptation_memory"] = dict(phase.get("adaptation_memory", {}))
     write_json(output / "run_manifest.json", manifest)
@@ -318,10 +319,15 @@ def main():
                 pipeline = None
                 if url is not None:
                     from MetaWeft.service.elasticsearch import ElasticsearchStore
-                    if v1:
+                    if plan["setting"] == "metaweft_v2":
+                        from MetaWeft.src.ace_adapt_reme_task_v2 import V2Pipeline, empty_playbook, memory_index_body
+                        pipeline_type = V2Pipeline
+                    elif dual_memory:
                         from MetaWeft.src.ace_adapt_reme_task import V1Pipeline, empty_playbook, memory_index_body
+                        pipeline_type = V1Pipeline
                     else:
                         from MetaWeft.src.base import BasePipeline, memory_index_body
+                        pipeline_type = BasePipeline
                     index = "metaweft-" + plan["run_tag"].lower().replace("_", "-") + "-" + phase["split"]
                     store = ElasticsearchStore(url, index)
                     mapping = read_json(artifacts / "memory_mapping.json") if checkpoint else memory_index_body(
@@ -331,10 +337,10 @@ def main():
                     if checkpoint:
                         if store.export():
                             raise RuntimeError("Recovery requires a fresh empty memory index")
-                        memory_file = (checkpoint["memories"]["task"]["snapshot"] if v1
+                        memory_file = (checkpoint["memories"]["task"]["snapshot"] if dual_memory
                                        else checkpoint["memory_file"])
                         restore_memory(store, read_json(relative_file(output, memory_file)))
-                        if v1:
+                        if dual_memory:
                             playbook = restore_adaptation(read_json(relative_file(
                                 output, checkpoint["memories"]["adaptation"]["snapshot"])))
                             snapshot_task_v2(store, artifacts / "memory_restored.json", plan, phase,
@@ -347,7 +353,7 @@ def main():
                                 raise RuntimeError("Cannot verify restored memory")
                     else:
                         write_json(artifacts / "memory_mapping.json", mapping)
-                        if v1:
+                        if dual_memory:
                             playbook = empty_playbook()
                             initial = snapshot_task_v2(store, artifacts / "memory_initial.json", plan, phase, 0)
                             snapshot_adaptation_v2(playbook, artifacts / "adaptation_memory_initial.json",
@@ -356,11 +362,10 @@ def main():
                             initial = snapshot_memory(store, artifacts / "memory_initial.json")
                         if initial["status"] != "verified" or initial["records"]:
                             raise RuntimeError("Cannot verify empty initial memory")
-                    pipeline_type = V1Pipeline if v1 else BasePipeline
                     pipeline = pipeline_type(store, Path(plan["run_directory"]),
                                              retrieval_k=plan["settings"]["retrieval_k"],
                                              retrieval_meta=plan["settings"].get("retrieval_meta"),
-                                             **({"playbook": playbook} if v1 else {}))
+                                             **({"playbook": playbook} if dual_memory else {}))
                 elif not checkpoint:
                     write_json(artifacts / "memory_initial.json", {"status": "disabled", "records": []})
                 if not checkpoint:
@@ -374,7 +379,7 @@ def main():
             finally:
                 CachedDBHandler.reset()
                 if store:
-                    if v1:
+                    if dual_memory:
                         final_pair_summary(output, artifacts, manifest)
                     else:
                         final = snapshot_memory(store, artifacts / "memory_final.json")
@@ -382,7 +387,7 @@ def main():
                         if final["status"] != "verified":
                             manifest["evidence_gaps"].append({"stage": "final_memory_snapshot", "reason": final["error"]})
                     store.close()
-                elif v1:
+                elif dual_memory:
                     final_pair_summary(output, artifacts, manifest)
                 else:
                     write_json(artifacts / "memory_final.json", {"status": "disabled", "records": []})
@@ -396,7 +401,7 @@ def main():
                 "degraded_task_ids": manifest["degraded_task_ids"],
                 "scenario_metric_scope": "selected tasks only" if phase["partial"] else "complete dataset",
                 **({"memory_branch_results": manifest["memory_branch_results"],
-                    "adaptation_memory": manifest["adaptation_memory"]} if v1 else {}),
+                    "adaptation_memory": manifest["adaptation_memory"]} if dual_memory else {}),
             })
             commit_checkpoint(plan, phase, manifest["completed_task_ids"],
                               previous=read_json(output / "checkpoint.json"), finalized=True)
