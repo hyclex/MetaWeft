@@ -18,6 +18,7 @@ import shutil
 import tempfile
 
 from MetaWeft.experiment.cost import PRICING, summarize_cost
+from MetaWeft.experiment.thinking import refresh_thinking_summary
 
 
 RECOVERY_VERSION = 1
@@ -468,6 +469,8 @@ def restore_memory(store, snapshot):
 def accounting(output):
     """Count physical calls and cache replays, retaining failures and unknown usage."""
     output = Path(output)
+    # Publish the diagnostic even if strict legacy accounting rejects a damaged log.
+    thinking = refresh_thinking_summary(output)
     manifest_path = output / "run_manifest.json"
     manifest = read_json(manifest_path) if manifest_path.is_file() else {}
     reused = set(manifest.get("reused_task_ids", []))
@@ -508,7 +511,11 @@ def accounting(output):
                 "reported_tokens": dict(tokens), "missing_usage_calls": missing, **summarize_cost(calls)}
 
     result = totals(list(records.values()))
+    result.update({key: thinking[key] for key in (
+        "total_llm_calls", "no_thinking_llm_calls", "thinking_despite_no_thinking_llm_calls",
+    )})
     result.update(
+        thinking_summary_path="thinking_summary.json", thinking_summary_status=thinking["status"],
         current_attempt=totals([record for key, record in records.items() if key not in inherited]),
         inherited=totals([records[key] for key in inherited]),
         pricing_assumptions=PRICING,

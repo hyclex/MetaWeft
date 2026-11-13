@@ -145,7 +145,8 @@ class RecoveryTests(unittest.TestCase):
         recovery.write_json(root / "resolved_settings.json", plan)
         return plan
 
-    def run_worker(self, plan, index=0, *, fail_task=None, fail_phase="execution", fail_evaluation=False):
+    def run_worker(self, plan, index=0, *, fail_task=None, fail_phase="execution", fail_evaluation=False,
+                   returned_reasoning=""):
         phase = plan["phases"][index]
         output = Path(phase["output_directory"])
         refs = tuple(TaskRef(task, number, 0) for number, task in enumerate(TASKS))
@@ -218,7 +219,8 @@ class RecoveryTests(unittest.TestCase):
                     successful_decisions += 1
                     content = json.dumps({"operation": "add", "target_id": None, "when_to_use": None,
                                           "content": None, "reason": "Supported by observed evidence"})
-                raw = {"choices": [{"message": {"content": content}}], "usage": {"total_tokens": 3}}
+                raw = {"choices": [{"message": {"content": content, "reasoning_content": returned_reasoning}}],
+                       "usage": {"total_tokens": 3}}
                 return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
                                        model_dump=lambda: raw)
 
@@ -309,6 +311,26 @@ class RecoveryTests(unittest.TestCase):
                     for record in restored[0].records.values():
                         for reference in record["source_refs"]:
                             self.assertTrue((Path(child["run_directory"]) / reference).is_file())
+
+    def test_final_thinking_logging_for_completed_and_failed_workers(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                plan = self.make_run(tag="thinking-failed" if failed else "thinking-completed")
+                error, _, _, _ = self.run_worker(plan, fail_task="b_1" if failed else None,
+                                                returned_reasoning="Provider ignored no-thinking")
+                self.assertEqual(error is not None, failed)
+                output = Path(plan["phases"][0]["output_directory"])
+                thinking = recovery.read_json(output / "thinking_summary.json")
+                logged = recovery.read_json(output / "accounting.json")
+                self.assertEqual(thinking["total_llm_calls"], 3)
+                self.assertEqual(thinking["no_thinking_llm_calls"], 3)
+                self.assertEqual(thinking["thinking_despite_no_thinking_llm_calls"], 1 if failed else 3)
+                for key in ("total_llm_calls", "no_thinking_llm_calls", "thinking_despite_no_thinking_llm_calls"):
+                    self.assertEqual(logged[key], thinking[key])
+                self.assertEqual(logged["thinking_summary_path"], "thinking_summary.json")
+                self.assertEqual(logged["thinking_summary_status"], thinking["status"])
+                self.assertEqual(recovery.read_json(output / "run_manifest.json")["status"],
+                                 "failed" if failed else "completed")
 
     def test_preset_recovery_selects_only_its_family_and_keeps_saved_controls_and_notes(self):
         parent = self.make_run("transferability_3")
@@ -456,6 +478,11 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(child["status"], "completed")
         cost = recovery.read_json(Path(child["phases"][0]["output_directory"]) / "accounting.json")
         self.assertEqual(cost["current_attempt"]["recorded_calls"], 0)
+        parent_thinking = recovery.read_json(Path(parent["phases"][0]["output_directory"]) / "thinking_summary.json")
+        child_thinking = recovery.read_json(Path(child["phases"][0]["output_directory"]) / "thinking_summary.json")
+        self.assertGreater(child_thinking["total_llm_calls"], 0)
+        self.assertEqual(child_thinking["total_llm_calls"], parent_thinking["total_llm_calls"])
+        self.assertEqual(cost["total_llm_calls"], child_thinking["total_llm_calls"])
         initial = recovery.read_json(Path(child["phases"][1]["output_directory"]) /
                                      "baseline_artifacts/metaweft/memory_restored.json")
         self.assertEqual(initial["records"], [])

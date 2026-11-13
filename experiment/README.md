@@ -212,7 +212,7 @@ The collector generates all three dataset reports from actual run artifacts:
 nohup bash tool/collect_appworld.sh >> raw_logs/metaweft-collection-launch.log 2>&1 < /dev/null &
 ```
 
-The reports (`res/appworld_2h.md`, `res/appworrld_8h.md`, and
+The reports (`res/appworld_2h.md`, `res/appworld_8h.md`, and
 `res/appworkd_full.md`) show the selected setting and saved note (automatic design
 descriptions plus any custom annotation for v2 presets),
 official TGC/SGC, completed/selected/source coverage, status, degradation, evidence

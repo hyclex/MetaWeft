@@ -267,7 +267,7 @@ snapshot failure remains in phase `evidence_gaps`; the already verified task
 checkpoint remains available. The collector displays gaps and recovery lineage.
 
 Run `bash tool/collect_appworld.sh` to regenerate the separate MetaWeft table in
-`res/appworld_2h.md`, `res/appworrld_8h.md`, and `res/appworkd_full.md`. The tables link to phase manifests and official aggregate
+`res/appworld_2h.md`, `res/appworld_8h.md`, and `res/appworkd_full.md`. The tables link to phase manifests and official aggregate
 evaluation files and estimated costs. Consult [integration decisions](DESIGNS.md) before changing
 these contracts.
 
@@ -289,6 +289,25 @@ current-attempt and inherited subtotals. A partial estimate sums only priced
 calls; an entirely unpriced stream remains `null`. Response-cache replays have
 no new cost, while provider-cached input receives its recorded discount. Failed
 responses with usable token usage are included.
+
+Final accounting also verifies thinking controls from the actual saved chat
+requests and responses, on both successful and failed phases. The shared
+[detector](../thinking.py) writes `thinking_summary.json` and adds
+`total_llm_calls`, `no_thinking_llm_calls`, and
+`thinking_despite_no_thinking_llm_calls` to new accounting records. Counts include
+distinct physical chat attempts across stages and recovery history; embeddings
+and response-cache replays are excluded. Nonempty reasoning text/blocks or
+positive reasoning-token counters indicate observable thinking, including when
+the provider reports zero tokens alongside reasoning text. Missing responses,
+unknown controls, and missing telemetry remain explicit in the summary.
+
+Run `python3 -B tool/backfill_thinking_summaries.py` from the workspace root to
+add derived summaries to existing completed, failed, or running phases. Existing
+raw calls, accounting, manifests, checkpoints, and captured sources stay intact.
+The periodic collector refreshes these summaries as logs change, including
+workers executing older source snapshots, and reports the three counts as
+`Think leak / Off / Calls` immediately before Degradation. Recovery rows include
+inherited calls, so parent and recovery counts must not be summed together.
 
 For existing ACE, ReMe and MetaWeft runs, execute
 `python3 -B tool/backfill_cost_estimates.py` from the workspace root. It creates

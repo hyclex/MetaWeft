@@ -119,6 +119,25 @@ class CostTests(unittest.TestCase):
             self.assertEqual(result["recorded_calls"], 2)
             self.assertEqual(result["cache_hits"], 1)
 
+    def test_thinking_summary_survives_a_truncated_log_rejected_by_accounting(self):
+        with TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            record = call(usage=USAGE)
+            record["input"].update(messages=[{"role": "user", "content": "test"}],
+                                   extra_body={"enable_thinking": False})
+            record["output"]["choices"] = [{"message": {"content": "answer", "reasoning_content": "work"}}]
+            path = output / "tasks/task/logs/lm_calls.jsonl"
+            path.parent.mkdir(parents=True)
+            raw = json.dumps(record) + '\n{"id":'
+            path.write_text(raw)
+            with self.assertRaises(json.JSONDecodeError):
+                accounting(output)
+            thinking = json.loads((output / "thinking_summary.json").read_text())
+            self.assertEqual(thinking["status"], "partial")
+            self.assertEqual(thinking["total_llm_calls"], 1)
+            self.assertEqual(thinking["thinking_despite_no_thinking_llm_calls"], 1)
+            self.assertEqual(path.read_text(), raw)
+
 
 if __name__ == "__main__":
     unittest.main()
