@@ -1,7 +1,7 @@
 # MetaWeft on AppWorld
 
 Use `run.sh` from the workspace root. It dispatches to thin `base.py`,
-`direct.py`, `retrieval.py`, `metaweft_v1.py`, and `metaweft_v2.py` entrypoints, each referencing its adjacent variant descriptor. See the
+`direct.py`, `retrieval.py`, `efficiency_1_emb3072.py`, `metaweft_v1.py`, and `metaweft_v2.py` entrypoints, each referencing its adjacent variant descriptor. See the
 [command catalog](../README.md) for runnable check, smoke-test, and collection
 examples.
 
@@ -30,7 +30,7 @@ AppWorld Python interpreter, selected automatically by the launcher.
 
 | Option | Meaning |
 | --- | --- |
-| Positional entrypoint | `base`, `direct`, `retrieval`, `metaweft_v1`, or `metaweft_v2`. |
+| Positional entrypoint | `base`, `direct`, `retrieval`, `efficiency_1_emb3072`, `metaweft_v1`, or `metaweft_v2`. |
 | `--preset NAME` | Required for `retrieval`: `base`, `performance_1..3`, `efficiency_1..3`, `transferability_1..3`, or `exact_base`. The preset becomes the run setting. |
 | `--dataset` | Required: `2h`, `8h`, or `full`, using the sibling dataset mapping. |
 | `--split` | `test-normal`, `test-challenge`, or `test-all` (default). |
@@ -91,6 +91,30 @@ uses exact whole-bank search and fails before paid retrieval calls above its
 declared capacity of 225; it does not evict memories or silently increase capacity.
 The expanded `setting_1..6` designs remain available only through the
 [retrieval benchmark](../../../evaluations/appworld_mem_retrieval/README.md).
+
+## Native embedding size
+
+`efficiency_1_emb3072` uses the unchanged `efficiency_1` retrieval preset with
+3072-dimensional `text-embedding-3-large` vectors, the model's
+[native size](https://developers.openai.com/api/docs/guides/embeddings).
+Its [descriptor](efficiency_1_emb3072.variant.json) records the comparison with
+the 1024-dimensional parent. Keep 40 interactions, top-five adaptation, existing
+retrieval/provider controls, and independently empty memory per split.
+The automatic note appends `emb3072` to the retrieval description, including on
+recovery with a replacement user annotation. Existing entries retain 1024.
+
+```bash
+bash MetaWeft/experiment/appworld/run.sh efficiency_1_emb3072 --dataset 8h --split test-all --cache-mode no_cache --dry-run
+nohup bash MetaWeft/experiment/appworld/run.sh efficiency_1_emb3072 --dataset 8h --split test-all --cache-mode no_cache > /dev/null 2>&1 < /dev/null &
+# Recover only a failed invocation from this variant's own family:
+bash MetaWeft/experiment/appworld/run.sh efficiency_1_emb3072 --dataset 8h --split test-all --recover --dry-run
+```
+
+Runs live under `raw_logs/metaweft-efficiency_1_emb3072-8h/experiment/output/<run_tag>/`.
+`8h/test-all` selects 57 normal and 138 challenge tasks, with parallel split
+workers and sequential tasks within each split; it is not a wall-clock timeout.
+Recovery retains the saved source, settings, preset, dimensions and committed
+memory. It cannot select the 1024-dimensional `efficiency_1` family.
 
 ## Dual-memory V1
 

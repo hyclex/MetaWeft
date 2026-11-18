@@ -85,6 +85,8 @@ def retrieval_note(settings):
     if not meta["reranking"]["stages"]:
         parts.append("no reranking")
     parts.append(f"top {settings['retrieval_k']} to adaptation")
+    if settings.get("embedding_dimensions", 1024) != 1024:
+        parts.append(f"emb{settings['embedding_dimensions']}")
     return "; ".join(parts)
 
 
@@ -122,8 +124,11 @@ def make_plan(setting, args):
         from MetaWeft.src.ace_adapt_reme_task_v2.config import v2_settings
         settings.update(v2_settings())
     elif setting != "direct":
-        settings["retrieval_meta"] = load_preset(setting)
+        preset = "efficiency_1" if setting == "efficiency_1_emb3072" else setting
+        settings["retrieval_meta"] = load_preset(preset)
         settings["retrieval_candidates"] = settings["retrieval_meta"]["search"]["num_candidates"]
+        if setting == "efficiency_1_emb3072":
+            settings["embedding_dimensions"] = 3072
     return {
         "baseline": "metaweft", "setting": setting, "setting_id": setting_id,
         "variant_id": (f"metaweft-ace-adapt-reme-task-{setting.rsplit('_', 1)[1]}" if setting in DUAL_MEMORY_SETTINGS
@@ -164,8 +169,9 @@ def prepare(plan, args, runtime):
     if plan["setting"] in ("base", "direct", *DUAL_MEMORY_SETTINGS):
         shutil.copy2(ENTRY / f"{plan['setting']}.variant.json", root / "variant.json")
     else:
-        descriptor = json.loads((framework / "experiment/appworld/retrieval.variant.json").read_text())
-        preset = framework / "src/memory_retrieval/presets" / f"{plan['setting']}.variant.json"
+        entry = "efficiency_1_emb3072" if plan["setting"] == "efficiency_1_emb3072" else "retrieval"
+        descriptor = json.loads((framework / f"experiment/appworld/{entry}.variant.json").read_text())
+        preset = framework / "src/memory_retrieval/presets" / f"{plan['settings']['retrieval_meta']['name']}.variant.json"
         descriptor.update(variant_id=plan["variant_id"], setting=plan["setting"],
                           retrieval_meta=plan["settings"]["retrieval_meta"],
                           retrieval_preset_provenance=json.loads(preset.read_text()))

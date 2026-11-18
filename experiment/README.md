@@ -52,6 +52,26 @@ This is a live run on misses. Reused responses are logged separately from incurr
 provider usage. Recovery preserves the original cache settings; use `no_cache`
 for fresh stochastic repetitions. See the [cache contract](../service/llm/README.md#response-cache).
 
+## Native embedding-size comparison
+
+`efficiency_1_emb3072` is a separate entrypoint using the unchanged `efficiency_1`
+preset with native 3072-dimensional `text-embedding-3-large` vectors. All other
+parent controls remain unchanged, including 40 interactions and final k=5.
+The automatic note includes `emb3072`; see the
+[design descriptor](appworld/efficiency_1_emb3072.variant.json).
+
+```bash
+bash MetaWeft/experiment/appworld/run.sh efficiency_1_emb3072 --dataset 8h --split test-all --cache-mode no_cache --dry-run
+nohup bash MetaWeft/experiment/appworld/run.sh efficiency_1_emb3072 --dataset 8h --split test-all --cache-mode no_cache > /dev/null 2>&1 < /dev/null &
+# Inspect recovery of a failed run in the same family before launching it:
+bash MetaWeft/experiment/appworld/run.sh efficiency_1_emb3072 --dataset 8h --split test-all --recover --dry-run
+nohup bash MetaWeft/experiment/appworld/run.sh efficiency_1_emb3072 --dataset 8h --split test-all --recover > /dev/null 2>&1 < /dev/null &
+```
+
+Each live command is a separate invocation; fresh runs need no recovery option.
+Outputs have their own `metaweft-efficiency_1_emb3072-8h` family, with the existing
+source snapshots, settings, ordered task lists and isolated per-split memory.
+
 ## Inspect and check
 
 ```bash

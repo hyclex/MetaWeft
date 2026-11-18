@@ -10,6 +10,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from textwrap import dedent
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -22,6 +23,77 @@ spec.loader.exec_module(launch)
 
 
 class LaunchTests(unittest.TestCase):
+    def test_native_embedding_variant_changes_only_dimensions(self):
+        args = launch.parse_args("efficiency_1_emb3072", ["--dataset", "8h", "--note", "annotation"])
+        plan = launch.make_plan("efficiency_1_emb3072", args)
+        parent_args = launch.parse_args("retrieval", ["--preset", "efficiency_1", "--dataset", "8h"])
+        parent = launch.make_plan("efficiency_1", parent_args)
+        self.assertEqual(parent["settings"]["embedding_dimensions"], 1024)
+        self.assertEqual(plan["settings"], {**parent["settings"], "embedding_dimensions": 3072})
+        self.assertEqual(plan["note"], parent["note"] + "; emb3072; annotation")
+        self.assertEqual([p["ordered_task_ids"] for p in plan["phases"]],
+                         [p["ordered_task_ids"] for p in parent["phases"]])
+        self.assertEqual([len(p["task_ids"]) for p in plan["phases"]], [57, 138])
+        self.assertNotEqual(plan["setting_id"], parent["setting_id"])
+        self.assertEqual(plan["selection"]["setting"], "efficiency_1_emb3072")
+        self.assertEqual(plan["recovery_version"], parent["recovery_version"])
+
+    def test_native_embedding_shell_dry_run_needs_no_credentials_or_runtime(self):
+        environment = {"PATH": os.environ["PATH"], "APPWORLD_RUNTIME_PROFILE": "/nonexistent-profile"}
+        result = subprocess.run(
+            ["bash", str(ENTRY / "run.sh"), "efficiency_1_emb3072", "--dataset", "8h",
+             "--split", "test-all", "--cache-mode", "no_cache", "--dry-run"],
+            cwd=ROOT, env=environment, check=True, capture_output=True, text=True)
+        plan = json.loads(result.stdout)
+        self.assertEqual(plan["settings"]["embedding_dimensions"], 3072)
+        self.assertEqual(plan["settings"]["cache_mode"], "no_cache")
+        self.assertFalse(Path(plan["run_directory"]).exists())
+
+    def test_native_embedding_prepare_preserves_descriptor_preset_and_source(self):
+        with TemporaryDirectory() as temporary, patch.dict(os.environ, {
+                "OPENAI_API_KEY": "offline", "OPENAI_BASE_URL": "https://provider.invalid/v1"}):
+            workspace = Path(temporary)
+            args = launch.parse_args("efficiency_1_emb3072", ["--dataset", "2h", "--split", "test-normal", "--limit", "1"])
+            args.env_file = workspace / "missing.env"
+            with patch.object(launch, "WORKSPACE", workspace):
+                plan = launch.make_plan("efficiency_1_emb3072", args)
+            root = Path(plan["run_directory"])
+            root.mkdir(parents=True)
+            repo = workspace / "project"
+            data = repo / "data"
+            (data / "datasets").mkdir(parents=True)
+            (data / "version.txt").write_text("offline")
+            phase = plan["phases"][0]
+            (data / "datasets" / f"{phase['dataset']}.txt").write_text("\n".join(phase["task_ids"]) + "\n")
+            for task in phase["task_ids"]:
+                launch.write_json(data / "tasks" / task / "task.json", {"task_id": task})
+
+            def snapshot(target, _baseline, _runtime):
+                project = target / "source/project"
+                project.mkdir(parents=True)
+                launch.write_json(project / "captured.json", {"offline": True})
+                launch.write_json(target / "source_provenance.json", {})
+                return project, None
+
+            with patch.object(launch, "REPO", repo), patch.object(launch, "find_data", return_value=data), \
+                 patch.object(launch, "snapshot_source", side_effect=snapshot), \
+                 patch.object(launch.subprocess, "run", return_value=SimpleNamespace(stdout="offline==1\n")):
+                launch.prepare(plan, args, {"appworld_python": sys.executable, "es_binary": "/offline/es"})
+            descriptor = json.loads((root / "variant.json").read_text())
+            original = json.loads((ENTRY / "efficiency_1_emb3072.variant.json").read_text())
+            for key, value in original.items():
+                self.assertEqual(descriptor[key], value)
+            self.assertEqual(descriptor["retrieval_meta"], launch.load_preset("efficiency_1"))
+            preset = ROOT / "MetaWeft/src/memory_retrieval/presets/efficiency_1.variant.json"
+            self.assertEqual(descriptor["retrieval_preset_provenance"], json.loads(preset.read_text()))
+            provenance = json.loads((root / "source_provenance.json").read_text())["metaweft_files"]
+            self.assertIn("experiment/appworld/efficiency_1_emb3072.py", provenance)
+            self.assertIn("experiment/appworld/efficiency_1_emb3072.variant.json", provenance)
+            self.assertIn("src/memory_retrieval/presets/efficiency_1.json", provenance)
+            self.assertTrue(plan["recovery_ready"])
+            resolved = json.loads((root / "resolved_settings.json").read_text())
+            self.assertEqual(resolved["settings"]["embedding_dimensions"], 3072)
+
     def test_all_entrypoints_expose_recovery_and_configured_retries(self):
         for setting in ("base", "direct"):
             with self.subTest(setting=setting):

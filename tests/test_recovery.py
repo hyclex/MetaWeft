@@ -80,7 +80,7 @@ class RecoveryTests(unittest.TestCase):
         }
         recovery.write_json(profile / "runtime.json", self.runtime)
 
-    def make_run(self, setting="direct", *, splits=("test-normal",), marker=False, tag="parent"):
+    def make_run(self, setting="direct", *, splits=("test-normal",), marker=False, tag="parent", dimensions=2):
         family = self.workspace / "raw_logs" / f"metaweft-{setting}-2h/experiment/output"
         root = family / tag
         root.mkdir(parents=True)
@@ -133,12 +133,13 @@ class RecoveryTests(unittest.TestCase):
             "settings": {**launch.SETTINGS, "max_retries": 1, "retry_delay_seconds": 0,
                          "cache_mode": "no_cache", "cache_path": str(self.workspace / "llm.sqlite3"),
                          "cache_ttl_seconds": 1800,
-                         "embedding_dimensions": 2, "max_interactions": 1},
+                         "embedding_dimensions": dimensions, "max_interactions": 1},
             "recovery_version": recovery.RECOVERY_VERSION,
             "selection": {"setting": setting, "dataset": "2h", "split": split, "limit": None, "task_id": None},
         }
         if setting not in ("base", "direct"):
-            plan["settings"]["retrieval_meta"] = launch.load_preset(setting)
+            preset = "efficiency_1" if setting == "efficiency_1_emb3072" else setting
+            plan["settings"]["retrieval_meta"] = launch.load_preset(preset)
             plan["note"] = launch.retrieval_note(plan["settings"]) + "; offline"
         recovery.seal_run(plan)
         recovery.write_json(root / "run_manifest.json", plan)
@@ -227,8 +228,9 @@ class RecoveryTests(unittest.TestCase):
             def embed(**request):
                 if task_id == fail_task and active["phase"] == fail_phase == "retrieval":
                     raise TimeoutError("injected provider outage")
-                raw = {"data": [{"index": 0, "embedding": [0.1, 0.2]}], "usage": {"total_tokens": 2}}
-                return SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[0.1, 0.2])], model_dump=lambda: raw)
+                vector = [0.1, 0.2] * (request["dimensions"] // 2)
+                raw = {"data": [{"index": 0, "embedding": vector}], "usage": {"total_tokens": 2}}
+                return SimpleNamespace(data=[SimpleNamespace(index=0, embedding=vector)], model_dump=lambda: raw)
 
             provider = Mock()
             provider.chat.completions.create.side_effect = chat
@@ -354,6 +356,33 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(checkpoints[0]["completed_task_ids"], ["a_1"])
         self.assertEqual(plan["note"], launch.retrieval_note(parent["settings"]) + "; new annotation")
         self.assertEqual(before, recovery.file_hashes(self.workspace, [self.workspace]))
+
+    def test_native_embedding_worker_and_recovery_keep_vectors_and_family(self):
+        parent = self.make_run("efficiency_1_emb3072", dimensions=3072)
+        other = self.make_run("efficiency_1")
+        error, _, _, stores = self.run_worker(parent, fail_task="b_1", fail_phase="retrieval")
+        self.assertIsInstance(error, LLMUnavailableError)
+        self.assertEqual(stores[0].mapping["mappings"]["properties"]["embedding"]["dims"], 3072)
+        self.assertTrue(stores[0].records)
+        self.assertTrue(all(len(record["embedding"]) == 3072 for record in stores[0].records.values()))
+        root = Path(parent["run_directory"])
+        with self.assertRaisesRegex(ValueError, "selection"):
+            recovery.select_parent(root.parent, parent["selection"], other["run_directory"])
+        args = launch.parse_args("efficiency_1_emb3072", ["--dataset", "2h", "--split", "test-normal",
+                                 "--recover", "--note", "new annotation", "--env-file", "/nonexistent"])
+        with patch.object(launch, "WORKSPACE", self.workspace), patch.dict(os.environ, {}, clear=True), \
+             patch.object(launch, "load_preset", side_effect=AssertionError("must use saved preset")):
+            plan, selected_root, checkpoints = launch.inspect_recovery("efficiency_1_emb3072", args)
+        self.assertEqual(selected_root, root)
+        self.assertEqual(plan["settings"], parent["settings"])
+        self.assertEqual(checkpoints[0]["completed_task_ids"], ["a_1"])
+        self.assertTrue(plan["note"].endswith("; emb3072; new annotation"))
+        child = self.child(parent)
+        error, _, opened, restored = self.run_worker(child)
+        self.assertIsNone(error)
+        self.assertEqual(opened, ["b_1", "c_1"])
+        self.assertEqual(restored[0].mapping["mappings"]["properties"]["embedding"]["dims"], 3072)
+        self.assertTrue(all(len(record["embedding"]) == 3072 for record in restored[0].records.values()))
 
     def test_explicit_source_repair_preserves_parent_prefix_and_future_recovery(self):
         from tool import recover_metaweft_consolidation_limit as repair

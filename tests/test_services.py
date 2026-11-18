@@ -106,6 +106,23 @@ class ModelTests(unittest.TestCase):
         self.assertIn("response", self.recorder.calls[0])
         self.assertEqual(self.provider.embeddings.create.call_count, 6)
 
+    def test_native_embedding_dimensions_reach_provider_and_reject_short_vectors(self):
+        for dimensions in (1024, 3072):
+            with self.subTest(dimensions=dimensions):
+                client = ModelClient(client=self.provider, chat_model="chat-test",
+                                     embedding_model="text-embedding-3-large", dimensions=dimensions,
+                                     recorder=self.recorder, max_retries=0, cache_mode="no_cache",
+                                     cache_path=self.client.cache_path)
+                vector = [0.1] * dimensions
+                self.provider.embeddings.create.return_value = SimpleNamespace(
+                    data=[SimpleNamespace(index=0, embedding=vector)], usage={"total_tokens": 2})
+                self.assertEqual(client.embed(["fixture"], phase="retrieve", component="embedding"), [vector])
+                self.assertEqual(self.provider.embeddings.create.call_args.kwargs["dimensions"], dimensions)
+                self.provider.embeddings.create.return_value = SimpleNamespace(
+                    data=[SimpleNamespace(index=0, embedding=[0.1, 0.2])], usage={"total_tokens": 2})
+                with self.assertRaisesRegex(LLMUnavailableError, "dimensions"):
+                    client.embed(["fixture"], phase="retrieve", component="embedding")
+
     def test_empty_and_malformed_chat_responses_retry(self):
         success = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="not JSON"))])
         bad = [None, SimpleNamespace(choices=[]), SimpleNamespace(choices=[None])]
