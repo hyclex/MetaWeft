@@ -40,10 +40,13 @@ class TaskMemory:
                  max_bytes=FULL_PROMPT_MAX_BYTES):
         if store is None or not callable(getattr(store, "query", None)):
             raise ValueError("V1 requires a task retrieval store")
-        self.retrieval_meta = deepcopy(retrieval_meta) if retrieval_meta is not None else load_preset("efficiency_1")
-        validate_meta(self.retrieval_meta, k=retrieval_k)
-        if retrieval_k != 10 or self.retrieval_meta != load_preset("efficiency_1"):
-            raise ValueError("V1 requires the unchanged efficiency_1 preset with k=10")
+        preset = load_preset("efficiency_1")
+        self.retrieval_meta = validate_meta(preset if retrieval_meta is None else retrieval_meta, k=retrieval_k)
+        stages = self.retrieval_meta.get("reranking", {}).get("stages", [])
+        if len(stages) == 1:
+            preset["reranking"]["stages"][0]["generation"]["seed"] = stages[0]["generation"]["seed"]
+        if retrieval_k != 10 or self.retrieval_meta != preset:
+            raise ValueError("V1 requires efficiency_1 with k=10; only the reranker seed may vary")
         self.store, self.run_root, self.templates = store, Path(run_root).resolve(), templates
         self.retrieval_k, self.max_bytes = retrieval_k, max_bytes
 

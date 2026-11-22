@@ -179,6 +179,20 @@ class V1Tests(unittest.TestCase):
             self.prepare(llm=llm)
         self.assertEqual(llm.calls, [])
 
+    def test_only_reranker_seed_may_vary_from_efficiency_preset(self):
+        meta = load_preset("efficiency_1")
+        generation = meta["reranking"]["stages"][0]["generation"]
+        generation["seed"] = 1
+        pipeline = V1Pipeline(self.store, self.root, retrieval_meta=meta)
+        self.assertEqual(pipeline.task_channel.retrieval_meta, meta)
+        generation["max_tokens"] += 1
+        with self.assertRaisesRegex(ValueError, "efficiency_1"):
+            V1Pipeline(self.store, self.root, retrieval_meta=meta)
+        generation["max_tokens"] -= 1
+        generation["seed"] = True
+        with self.assertRaisesRegex(ValueError, "seed"):
+            V1Pipeline(self.store, self.root, retrieval_meta=meta)
+
     def test_degraded_retrieval_still_adapts_and_separates_adapter_status(self):
         llm = LLM([{"guidance": "Check assumptions"}])
         with patch.object(self.store, "query", side_effect=StoreSearchError("search failed")):
