@@ -93,6 +93,9 @@ metaweft_python=$(python3 -B metaskill-appworld/run/runtime_paths.py appworld_py
 
 ## Live smoke validation
 
+The [shuffled test order commands](appworld/README.md#shuffled-test-order) use
+the same runtime and select a prefix of the frozen test indexes.
+
 These commands make real provider calls and write raw artifacts. They select the
 first two Quick2h tasks from each split in existing manifest order, four tasks in
 total. Memory resets between splits; within each split, the second task can use

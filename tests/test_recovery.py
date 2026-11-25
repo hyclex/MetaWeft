@@ -616,6 +616,9 @@ class RecoveryTests(unittest.TestCase):
                 launch.check_recovery_options(parent, args)
         with self.assertRaisesRegex(ValueError, "selection"):
             recovery.select_parent(root.parent, {**parent["selection"], "limit": 1}, str(root))
+        shuffled = {**parent["selection"], "dataset": "shuffled_v1_2h"}
+        with self.assertRaisesRegex(ValueError, "selection"):
+            recovery.select_parent(root.parent, shuffled, str(root))
         legacy = {**parent, "recovery_version": 0}
         recovery.write_json(root / "run_manifest.json", legacy)
         with self.assertRaisesRegex(ValueError, "predates"):

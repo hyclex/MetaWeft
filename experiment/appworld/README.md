@@ -32,7 +32,7 @@ AppWorld Python interpreter, selected automatically by the launcher.
 | --- | --- |
 | Positional entrypoint | `base`, `direct`, `retrieval`, `efficiency_1_emb3072`, `metaweft_v1`, or `metaweft_v2`. |
 | `--preset NAME` | Required for `retrieval`: `base`, `performance_1..3`, `efficiency_1..3`, `transferability_1..3`, or `exact_base`. The preset becomes the run setting. |
-| `--dataset` | Required: `2h`, `8h`, or `full`, using the sibling dataset mapping. |
+| `--dataset` | Required. Choose `2h`, `8h`, `full`, `shuffled_v1_2h`, `shuffled_v1_8h`, or `shuffled_v1_full`. |
 | `--split` | `test-normal`, `test-challenge`, or `test-all` (default). |
 | `--limit N` | First N tasks per selected split; records partial coverage. |
 | `--task-id ID` | One task from a single selected split; mutually exclusive with `--limit`. |
@@ -91,6 +91,23 @@ uses exact whole-bank search and fails before paid retrieval calls above its
 declared capacity of 225; it does not evict memories or silently increase capacity.
 The expanded `setting_1..6` designs remain available only through the
 [retrieval benchmark](../../../evaluations/appworld_mem_retrieval/README.md).
+
+## Shuffled test order
+
+All launchers share the frozen `shuffled_v1` test indexes with ACE and ReMe.
+The dataset version identifies the run family and its recovery selection.
+`--limit N` selects the first N tasks of the chosen order for each split.
+
+```bash
+bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset shuffled_v1_8h --dry-run
+smoke_cache=$(mktemp -d /tmp/metaweft-shuffle-smoke.XXXXXX)
+bash MetaWeft/experiment/appworld/run.sh metaweft_v2 --dataset shuffled_v1_8h --split test-normal --limit 2 --cache-mode no_cache --cache-path "$smoke_cache/llm.sqlite3"
+nohup bash MetaWeft/experiment/appworld/run.sh retrieval --preset efficiency_1 --dataset shuffled_v1_8h --cache-mode no_cache > /dev/null 2>&1 < /dev/null &
+nohup bash MetaWeft/experiment/appworld/run.sh metaweft_v2 --dataset shuffled_v1_8h --cache-mode no_cache > /dev/null 2>&1 < /dev/null &
+```
+
+For the shared three-split concurrency cap, use the
+[8h campaign launcher](../../../tool/READEME.md#shuffled-appworld-8h-campaign).
 
 ## Native embedding size
 
@@ -299,8 +316,8 @@ The [cost estimator](../cost.py) migrates the per-million-token formula and usag
 validation from `metaskill-appworld`'s ReMe `execution_accounting.usage_cost`.
 Qwen rates are the existing October 13 registry values: $0.64 uncached input,
 $0.08 cached input, and $2.16 output per million tokens. Embedding rates retain
-the October 28 assumptions in `tool/get_cost.sh`: $0.13 input, $0.00845 cached
-input, and no output charge. The historical registry lacks `qwen3.8-max-0902`;
+the October 28 assumptions in the [archived cost script](../../../res/tool_provenance_2026-11-24/tool/get_cost.sh)
+of $0.13 input, $0.00845 cached input, and no output charge. The historical registry lacks `qwen3.8-max-0902`;
 its November 10 public provider ratios supply $9.60 input, approximately $0.80
 cached input, and $28.80 output per million tokens, using the registry's same
 ratio conversion. The exact returned ratios are preserved with that model's

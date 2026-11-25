@@ -22,7 +22,7 @@ REPO = WORKSPACE / "metaskill-appworld"
 sys.path.insert(0, str(REPO / "run"))
 sys.path.insert(0, str(WORKSPACE))
 from runtime_paths import PROVIDER_FILE, isolated_environment, load_runtime
-from reproduce import DATASETS, find_data, sha256, snapshot_source, task_ids
+from reproduce import DATASETS, DATASET_SIZES, find_data, sha256, snapshot_source, task_ids
 from MetaWeft.experiment.recovery import (
     DUAL_MEMORY_SETTINGS, add_recovery_argument, clone_run, recovery_lock, recovery_plan, recovery_version,
     seal_run, select_parent, selection, write_json,
@@ -134,6 +134,7 @@ def make_plan(setting, args):
         "variant_id": (f"metaweft-ace-adapt-reme-task-{setting.rsplit('_', 1)[1]}" if setting in DUAL_MEMORY_SETTINGS
                        else f"metaweft-{setting}-v1"), "run_id": f"{setting_id}-{tag}",
         "run_tag": tag, "run_directory": str(root), "dataset_version": args.dataset,
+        "dataset_size": DATASET_SIZES[args.dataset],
         "scenario": "direct" if setting == "direct" else "cold-start", "split": args.split,
         "note": "; ".join(filter(None, [retrieval_note(settings), args.note])),
         "status": "planned", "phases": phases, "phase_execution": "parallel",
