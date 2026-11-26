@@ -1,0 +1,25 @@
+{
+  "hypothesis": "Lossless packing of repeated observations allows more complete consolidation requests to fit the context limit.",
+  "intended_differences": [
+    "In task consolidation only, intern identical observations of at least 256 UTF-8 bytes appearing at least twice. Use first-appearance reference IDs and retain raw evidence."
+  ],
+  "memory_structure": "Task-memory schema remains metaweft-task-memory-v1: named ReMe-like records, applicability, content, source references and complete embeddings. Adaptation memory uses metaweft-adaptation-memory-v2 with schema_version 2, stable IDs, revision/counter, content and source references, grouped into memory selection, task-specific pruning and exploration guidance. Stored metadata remains available for audit and localized updates.",
+  "retrieval": "Unchanged shared efficiency_1 retrieval with final k=10, combined-vector HNSW depth 20, 40 ANN candidates, RRF constant 20, candidate limit 20 and qwen3.8-flash listwise ranking to 20. Small pools bypass ranking; empty task memory makes no retrieval embedding call. Adaptation sees the full playbook; no playbook retrieval, truncation or compression.",
+  "adaptation": "One temperature-zero call on every task, including both-empty initialization. It selects useful memory content, prunes irrelevant task details and identifies missing information with concrete exploration guidance. It returns exactly a JSON guidance string, supplied once to the executor. Preserve the exact request, raw response, validated output, prompt hashes and canonical call references separately from prompt content.",
+  "execution_context": "Fixed initial adapted guide and 40 interactions. Executor temperature 0, requested model seed 0 or 1, AppWorld seed 100, thinking disabled.",
+  "evidence_update": "P0 extraction, candidate order, neighbor retrieval, full consulted-source resolution, add/skip/revise/defer validation, embeddings, confirmed writes, source-reference propagation, update eligibility, and paired checkpoints remain inherited. Only the per-candidate task_consolidation request serializes repeated observations through an exactly reversible table. Native consulted_evidence and raw source episodes remain complete on disk. Existing prompt/context bounds and deferrals still apply.",
+  "feedback_access": "Success gating uses only official scalar reward in code. The adapter sees whitelisted current task information plus memory content. The adaptation updater sees the actual sanitized adapter input, validated guide and minimal edit targeting, and cannot see trajectory, scalar score, evaluator assertions, reference solutions or newly changed task memory. Task-memory update feedback access remains V1's sanitized trace and scalar reward. Full evidence remains in run artifacts outside adaptation-update prompts.",
+  "memory_lifetime": "Both memories start empty independently per invocation/split, persist across the ordered task stream and update before the next task. Every completed task advances the committed pair epoch, including adaptation skips and no-ops. Writable memory, benchmark state, checkpoints and output are isolated. Shared completed response store remains the exception; no_cache is the default. No warm-start interface or task parallelism within a split.",
+  "comparison": "Matched original-order AppWorld 8h comparison at requested seeds 0 and 1. Each design changes one component of the repaired search reference.",
+  "prompt_hashes": {
+    "adaptation_update.txt": "ba6bbbf92cc57cdd5cba37b41987618a250c447cdacd9462ad418a38f44a6c44",
+    "task_consolidation.txt": "38fde1f6e4c391eaf52c03c43eb67c0d7585edf873a23208448a19dcdc61438d",
+    "adaptation.txt": "f913b242cf89fb6369efc93b24b8140eaa49fc8d95599275320976d39c4f78c3",
+    "execution_base.txt": "3c719f7c37a6bc777fcc19f2d0759e3926925eb3bab7227ae61f80843f5df889",
+    "task_extraction.txt": "a7fcfd416cea8c39c862c6555ca6eaaeb6c7537274d1bdfa7d6da0563fbbe6c7"
+  },
+  "variant_id": "metaweft-observation_dict-v1",
+  "setting": "observation_dict",
+  "parent_variant": "metaweft_v2",
+  "parent_source": "auto_explore/20261119_v1_v2_completion_20261119T161846Z/variants/C12 and repaired P0. Native V2 provides the two memory banks, retrieval, evaluator and paired checkpoints."
+}

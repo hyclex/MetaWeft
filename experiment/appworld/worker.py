@@ -22,8 +22,9 @@ from MetaWeft.experiment.appworld.executor import execute
 from MetaWeft.experiment.recovery import (
     accounting, commit_checkpoint, load_checkpoint, read_json, relative_file, restore_memory, write_json,
     restore_adaptation, snapshot_adaptation_v2, snapshot_task_v2, state_refs,
-    DUAL_MEMORY_SETTINGS, render_adaptation,
+    DUAL_MEMORY_SETTINGS, V2_SETTINGS, render_adaptation,
 )
+from MetaWeft.src.search_designs.settings import NOTES as SEARCH_DESIGNS
 from MetaWeft.service.llm import LLMCacheError, LLMUnavailableError, ModelClient
 from MetaWeft.service.llm.cache import restore_pending_responses
 
@@ -101,9 +102,11 @@ class MetaWeftAdapter:
         self.pipeline, self.store = pipeline, store
         self.output = Path(phase["output_directory"])
         self.dual_memory = plan["setting"] in DUAL_MEMORY_SETTINGS
-        policy = ("ace_adapt_reme_task_v2" if plan["setting"] == "metaweft_v2"
+        policy = ("ace_adapt_reme_task_v2" if plan["setting"] in V2_SETTINGS
                   else "ace_adapt_reme_task" if self.dual_memory else "base")
         self.prompts = Path(plan["source_framework"]) / f"src/{policy}/prompts/v1"
+        if plan["setting"] == "contract_check":
+            self.prompts = Path(plan["source_framework"]) / "src/search_designs"
         self.checkpoint = read_json(self.output / "checkpoint.json")
         if self.dual_memory:
             self.set_committed_pair()
@@ -170,7 +173,12 @@ class MetaWeftAdapter:
                             cache_path=self.plan["settings"]["cache_path"],
                             cache_recovery_dir=artifacts / "llm_cache_pending",
                             recorder=physical_recorder(services.llm, call_refs))
-        model = ModelClient(**model_options)
+        client_type = ModelClient
+        if self.plan["setting"] in SEARCH_DESIGNS:
+            from MetaWeft.src.search_designs.client import SearchClient
+            client_type = SearchClient
+            model_options["seed"] = self.plan["settings"]["seed"]
+        model = client_type(**model_options)
         clients = ExitStack()
         clients.callback(model.close)
         stages = {}
@@ -181,7 +189,7 @@ class MetaWeftAdapter:
             if self.pipeline:
                 retrieval_model = model
                 if self.pipeline.retrieval_meta["schema_version"] == 2:
-                    retrieval_model = ModelClient(**{**model_options,
+                    retrieval_model = client_type(**{**model_options,
                                                      **self.pipeline.retrieval_meta["provider_policy"]})
                     clients.callback(retrieval_model.close)
                 prepared = self.pipeline.prepare_context(spec, llm=model, artifacts=artifacts,
@@ -319,9 +327,12 @@ def main():
                 pipeline = None
                 if url is not None:
                     from MetaWeft.service.elasticsearch import ElasticsearchStore
-                    if plan["setting"] == "metaweft_v2":
+                    if plan["setting"] in V2_SETTINGS:
                         from MetaWeft.src.ace_adapt_reme_task_v2 import V2Pipeline, empty_playbook, memory_index_body
                         pipeline_type = V2Pipeline
+                        if plan["setting"] == "observation_dict":
+                            from MetaWeft.src.search_designs.observation_dict import ObservationDictionary
+                            pipeline_type = ObservationDictionary
                     elif dual_memory:
                         from MetaWeft.src.ace_adapt_reme_task import V1Pipeline, empty_playbook, memory_index_body
                         pipeline_type = V1Pipeline

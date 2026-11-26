@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from MetaWeft.src.ace_adapt_reme_task.common import FULL_PROMPT_MAX_BYTES, SchemaError, call_model, write_json
+from MetaWeft.src.ace_adapt_reme_task.common import FULL_PROMPT_MAX_BYTES, SchemaError, PromptOverflow, call_model, write_json
 from MetaWeft.src.ace_adapt_reme_task.evidence import task_view
 from .adaptation_memory import playbook_content
 
@@ -27,7 +27,9 @@ class Adapter:
             if set(value) != {"guidance"} or not isinstance(value["guidance"], str):
                 raise SchemaError("Adaptation requires exactly one string field: guidance")
             event.update(status="completed", guide=value["guidance"])
-        except SchemaError as error:
+        except (SchemaError, PromptOverflow) as error:
+            if isinstance(error, PromptOverflow) and not hasattr(services["llm"], "search_seed"):
+                raise
             event.update(status="degraded", error=str(error), guide="")
         event["retrieved_count"] = len(task_prepared.payload)
         event["playbook_entry_count"] = len(adaptation_prepared.payload["state"]["entries"])

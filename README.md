@@ -122,3 +122,7 @@ adapter input and output without execution trajectories. Task-memory learning
 still uses both successful and unsuccessful episodes. See the
 [V2 policy](src/ace_adapt_reme_task_v2/DESIGNS.md) and
 [variant descriptor](experiment/appworld/metaweft_v2.variant.json).
+
+## Search designs on AppWorld 8h
+
+See the [AppWorld search designs](experiment/appworld/README.md#search-designs) for Contract Check and Observation Dictionary, their entrypoints and matched generation settings.

@@ -24,9 +24,10 @@ sys.path.insert(0, str(WORKSPACE))
 from runtime_paths import PROVIDER_FILE, isolated_environment, load_runtime
 from reproduce import DATASETS, DATASET_SIZES, find_data, sha256, snapshot_source, task_ids
 from MetaWeft.experiment.recovery import (
-    DUAL_MEMORY_SETTINGS, add_recovery_argument, clone_run, recovery_lock, recovery_plan, recovery_version,
+    DUAL_MEMORY_SETTINGS, V2_SETTINGS, add_recovery_argument, clone_run, recovery_lock, recovery_plan, recovery_version,
     seal_run, select_parent, selection, write_json,
 )
+from MetaWeft.src.search_designs.settings import NOTES as SEARCH_DESIGNS
 from MetaWeft.service.llm.config import cache_settings, retry_defaults
 from MetaWeft.src.memory_retrieval import load_preset
 
@@ -48,6 +49,8 @@ RETRIEVAL_PRESETS = (
 
 def parse_args(setting, argv=None):
     parser = argparse.ArgumentParser(description=f"MetaWeft {setting}")
+    if setting in SEARCH_DESIGNS:
+        parser.add_argument("--seed", type=int, choices=(0, 1))
     if setting == "retrieval":
         parser.add_argument("--preset", choices=RETRIEVAL_PRESETS, required=True)
     parser.add_argument("--dataset", choices=DATASETS, required=True)
@@ -90,6 +93,12 @@ def retrieval_note(settings):
     return "; ".join(parts)
 
 
+def design_note(setting, settings):
+    if setting in SEARCH_DESIGNS:
+        return f"{SEARCH_DESIGNS[setting]} T=0, seed {settings['seed']}."
+    return retrieval_note(settings)
+
+
 def run_location(setting, args):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tag = f"{stamp}_{args.split}_{uuid.uuid4().hex[:8]}"
@@ -120,9 +129,20 @@ def make_plan(setting, args):
     elif setting == "metaweft_v1":
         from MetaWeft.src.ace_adapt_reme_task.config import v1_settings
         settings.update(v1_settings())
-    elif setting == "metaweft_v2":
+    elif setting in V2_SETTINGS:
         from MetaWeft.src.ace_adapt_reme_task_v2.config import v2_settings
         settings.update(v2_settings())
+        if setting in SEARCH_DESIGNS:
+            from MetaWeft.src.search_designs.settings import CAPS, TOKENIZER_HASHES
+            seed = args.seed or 0
+            settings.update(seed=seed, execution_temperature=0.0, max_retries=5, retry_delay_seconds=60,
+                            context_limit=65536,
+                            output_caps=CAPS, tokenizer_hashes=TOKENIZER_HASHES, embedding_context_limit=8192,
+                            context_protocol="qwen3.8-flash-next-publisher-guard-v1", pythonhashseed=0)
+            settings["retrieval_meta"]["reranking"]["stages"][0]["generation"]["seed"] = seed
+            if setting == "contract_check":
+                settings["v2_prompt_manifest"]["execution_base.txt"] = sha256(
+                    FRAMEWORK / "src/search_designs/execution_base.txt")
     elif setting != "direct":
         preset = "efficiency_1" if setting == "efficiency_1_emb3072" else setting
         settings["retrieval_meta"] = load_preset(preset)
@@ -131,12 +151,12 @@ def make_plan(setting, args):
             settings["embedding_dimensions"] = 3072
     return {
         "baseline": "metaweft", "setting": setting, "setting_id": setting_id,
-        "variant_id": (f"metaweft-ace-adapt-reme-task-{setting.rsplit('_', 1)[1]}" if setting in DUAL_MEMORY_SETTINGS
+        "variant_id": (f"metaweft-ace-adapt-reme-task-{setting.rsplit('_', 1)[1]}" if setting in ("metaweft_v1", "metaweft_v2")
                        else f"metaweft-{setting}-v1"), "run_id": f"{setting_id}-{tag}",
         "run_tag": tag, "run_directory": str(root), "dataset_version": args.dataset,
         "dataset_size": DATASET_SIZES[args.dataset],
         "scenario": "direct" if setting == "direct" else "cold-start", "split": args.split,
-        "note": "; ".join(filter(None, [retrieval_note(settings), args.note])),
+        "note": "; ".join(filter(None, [design_note(setting, settings), args.note])),
         "status": "planned", "phases": phases, "phase_execution": "parallel",
         "partial": any(p["partial"] for p in phases), "repetitions": 1,
         "task_order": "manifest order", "memory_reset": "empty independently for each split",
@@ -227,6 +247,8 @@ def worker_environment(plan):
 
 
 def check_recovery_options(parent, args):
+    if getattr(args, "seed", None) is not None and args.seed != parent["settings"]["seed"]:
+        raise ValueError("--seed conflicts with the saved run")
     if args.cache_mode is not None and args.cache_mode != parent["settings"].get("cache_mode"):
         raise ValueError("--cache-mode conflicts with the saved run")
     if args.cache_path is not None:
@@ -262,7 +284,7 @@ def inspect_recovery(setting, args):
                          command=[sys.executable, *sys.argv])
     plan["phase_execution"] = "parallel"
     if args.note:
-        plan["note"] = "; ".join(filter(None, [retrieval_note(parent["settings"]), args.note]))
+        plan["note"] = "; ".join(filter(None, [design_note(setting, parent["settings"]), args.note]))
     return plan, parent_root, checkpoints
 
 
@@ -311,6 +333,8 @@ def run_phases(plan):
                 phase = plan["phases"][index]
                 environment = isolated_environment(root / "runtime" / phase["split"])
                 environment["PYTHONPATH"] = os.environ["PYTHONPATH"]
+                if plan["setting"] in SEARCH_DESIGNS:
+                    environment["PYTHONHASHSEED"] = "0"
                 environments[index] = environment
                 phase["writable_paths"] = {k: v for k, v in environment.items()
                                            if k.endswith("CACHE_DIR") or k in ("APPWORLD_CACHE", "TMPDIR", "XDG_CACHE_HOME")}

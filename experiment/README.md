@@ -336,3 +336,12 @@ Recovery reuses committed tasks and restarts the unfinished task from the prior
 checkpoint's memory. The failed parent remains unchanged, including failed calls
 and partial-update evidence. Runs predating the checkpoint format are unsupported.
 See [recovery details](appworld/README.md#recovery).
+
+## Search designs on AppWorld 8h
+
+Use the [AppWorld search design entrypoints](appworld/README.md#search-designs) for individual runs. From the workspace root, launch both designs at seeds 0 and 1 with the following command. The launcher prints its batch directory. Inspect its `status.json` for checkpoint counts, current tasks, failures, recovery attempts and PIDs.
+
+```bash
+launch_log=$(mktemp raw_logs/search_designs_8h_launch.XXXXXXXX.log)
+nohup setsid python3 -B tool/tmp/run_search_designs_8h.py > "$launch_log" 2>&1 < /dev/null &
+```

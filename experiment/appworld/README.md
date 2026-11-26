@@ -1,7 +1,7 @@
 # MetaWeft on AppWorld
 
 Use `run.sh` from the workspace root. It dispatches to thin `base.py`,
-`direct.py`, `retrieval.py`, `efficiency_1_emb3072.py`, `metaweft_v1.py`, and `metaweft_v2.py` entrypoints, each referencing its adjacent variant descriptor. See the
+`direct.py`, `retrieval.py`, `efficiency_1_emb3072.py`, `metaweft_v1.py`, `metaweft_v2.py`, `contract_check.py`, and `observation_dict.py` entrypoints, each referencing its adjacent variant descriptor. See the
 [command catalog](../README.md) for runnable check, smoke-test, and collection
 examples.
 
@@ -30,7 +30,7 @@ AppWorld Python interpreter, selected automatically by the launcher.
 
 | Option | Meaning |
 | --- | --- |
-| Positional entrypoint | `base`, `direct`, `retrieval`, `efficiency_1_emb3072`, `metaweft_v1`, or `metaweft_v2`. |
+| Positional entrypoint | `base`, `direct`, `retrieval`, `efficiency_1_emb3072`, `metaweft_v1`, `metaweft_v2`, `contract_check`, or `observation_dict`. |
 | `--preset NAME` | Required for `retrieval`: `base`, `performance_1..3`, `efficiency_1..3`, `transferability_1..3`, or `exact_base`. The preset becomes the run setting. |
 | `--dataset` | Required. Choose `2h`, `8h`, `full`, `shuffled_v1_2h`, `shuffled_v1_8h`, or `shuffled_v1_full`. |
 | `--split` | `test-normal`, `test-challenge`, or `test-all` (default). |
@@ -44,7 +44,7 @@ AppWorld Python interpreter, selected automatically by the launcher.
 | `--data-root PATH` | Existing downloaded AppWorld data directory accepted by the shared runtime rules. |
 | `--note TEXT` | Recorded annotation; v2 presets prepend an automatic design description. Recovery preserves the saved description and replaces the annotation when supplied. Does not change variant identity. |
 
-All settings use 40 executor interactions, one primary trial, `qwen3.8-flash` at
+The original settings use 40 executor interactions, one primary trial, `qwen3.8-flash` at
 temperature `0.9`, model seed `0`, and thinking disabled. AppWorld's environment
 random seed is `100`. Base memory calls use
 temperature `0`; embeddings use `text-embedding-3-large`, 1024 dimensions. Provider
@@ -189,6 +189,20 @@ schema, restoring both memories and their epoch together. Recovery requires the
 same setting; V1 and V2 do not migrate or share playbooks. See the
 [command catalog](../README.md) for disposable smoke storage and cleanup, and
 fresh/background/recovery examples for all dataset sizes.
+
+## Search designs
+
+**Contract Check** adds the frozen task-contract and completion reminder to the executor prompt. **Observation Dictionary** stores long, identical observations once per task-consolidation request. The repaired three-arm confirmation recorded 39/72 and 37/72 solves respectively, against 34/72 for the parent. See the [matched results](../../../auto_explore/consolidated_20261119/02_repaired__research__confirmation_analysis.md).
+
+Both derive from dual-memory V2. Their search protocol uses temperature zero throughout, requested model seed 0 or 1 (`--seed`, default 0), AppWorld seed 100, a 65,536-token chat limit including reserved output and an 8,192-token embedding batch limit. Stage output caps are 8,192 for execution and adaptation, 512 for ranking and 4,096 for memory updates. Each new run captures the tokenizer files, descriptor and implementation. The seed and design appear in the result note. [Contract Check descriptor](contract_check.variant.json) · [Observation Dictionary descriptor](observation_dict.variant.json)
+
+Run from the workspace root. Use an explicit failed run directory with `--recover` to restore its committed task and playbook pair. The chat tokenizer comes from the search’s [publisher-tokenizer validation](../../../auto_explore/consolidated_20261119/01_initial__research__context_counter_review.md). The embedding guard uses the captured cl100k_base vocabulary. Each run verifies both local files against the frozen hashes.
+
+```bash
+bash MetaWeft/experiment/appworld/run.sh contract_check --dataset 8h --split test-all --seed 0 --dry-run
+bash MetaWeft/experiment/appworld/run.sh observation_dict --dataset 8h --split test-all --seed 1 --dry-run
+python3 -B tool/tmp/run_search_designs_8h.py --dry-run
+```
 
 ## Recovery
 

@@ -21,6 +21,8 @@ class V1Pipeline:
     adaptation_schema = ADAPTATION_SCHEMA
     component_prefix = "metaweft_v1"
 
+    task_memory_class = TaskMemory
+
     def __init__(self, store, run_root, prompts=None, *, retrieval_k=10, retrieval_meta=None,
                  playbook=None, task_state_ref=None, adaptation_state_ref=None,
                  full_prompt_max_bytes=FULL_PROMPT_MAX_BYTES):
@@ -28,7 +30,7 @@ class V1Pipeline:
         self.prompts = Path(prompts) if prompts else self.prompt_directory
         self.templates = {name: (self.prompts / f"{name}.txt").read_text() for name in
                           ("adaptation", "task_extraction", "task_consolidation", "adaptation_update")}
-        self.task_channel = TaskMemory(store, self.run_root, self.templates, retrieval_k=retrieval_k,
+        self.task_channel = self.task_memory_class(store, self.run_root, self.templates, retrieval_k=retrieval_k,
                                        retrieval_meta=retrieval_meta, max_bytes=full_prompt_max_bytes)
         self.adaptation_channel = self.adaptation_memory_class(self.run_root, self.templates, playbook,
                                                                max_bytes=full_prompt_max_bytes)

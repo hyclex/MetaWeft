@@ -60,6 +60,9 @@ def call_model(name, template, payload, *, services, event, save, max_bytes=FULL
     prior_calls = len(services.get("call_refs", {}).get(component, []))
     llm = services["llm"]
     settings = {"temperature": 0.0, "seed": 0, "extra_body": {"enable_thinking": False}}
+    if hasattr(llm, "search_seed"):
+        from MetaWeft.src.search_designs.settings import CAPS
+        settings.update(seed=llm.search_seed, max_tokens=CAPS[name])
     event.update(messages=deepcopy(messages), input=deepcopy(payload), status="pending", raw_output=None,
                  prompt_sha256=sha_text(template),
                  prompt_bytes=sum(len(message["content"].encode("utf-8")) for message in messages),

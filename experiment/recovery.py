@@ -26,7 +26,8 @@ PAIR_RECOVERY_VERSION = 2
 TASK_MEMORY_SCHEMA = "metaweft-task-memory-v1"
 ADAPTATION_MEMORY_SCHEMA = "metaweft-adaptation-memory-v1"
 ADAPTATION_MEMORY_V2_SCHEMA = "metaweft-adaptation-memory-v2"
-DUAL_MEMORY_SETTINGS = ("metaweft_v1", "metaweft_v2")
+V2_SETTINGS = ("metaweft_v2", "contract_check", "observation_dict")
+DUAL_MEMORY_SETTINGS = ("metaweft_v1", *V2_SETTINGS)
 V1_TASK_ARTIFACTS = (
     "task_spec.json", "retrieval.json", "adaptation_preparation.json", "adaptation_event.json",
     "context.json", "trace.jsonl", "evidence.json", "episode_evidence.json",
@@ -40,7 +41,7 @@ def recovery_version(setting):
 
 
 def adaptation_schema(setting):
-    return ADAPTATION_MEMORY_V2_SCHEMA if setting == "metaweft_v2" else ADAPTATION_MEMORY_SCHEMA
+    return ADAPTATION_MEMORY_V2_SCHEMA if setting in V2_SETTINGS else ADAPTATION_MEMORY_SCHEMA
 
 
 def _adaptation_module(schema):

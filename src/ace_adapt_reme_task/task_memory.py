@@ -147,6 +147,9 @@ class TaskMemory:
                     missing.append(reference)
         return sources, sorted(set(missing))
 
+    def consolidation_request(self, candidate, neighbors, sources):
+        return self.templates["task_consolidation"], {"candidate": candidate, "neighbors": neighbors, "evidence": sources}
+
     @staticmethod
     def _decision(value, neighbors):
         if (set(value) != {"operation", "target_id", "name", "when_to_use", "content", "reason"}
@@ -225,9 +228,9 @@ class TaskMemory:
                     continue
                 model_event = event["call"] = {}
                 try:
-                    value = call_model("task_consolidation", self.templates["task_consolidation"],
-                                       {"candidate": candidate, "neighbors": event["neighbors"], "evidence": sources},
-                                       services=services, event=model_event, save=save_updates, max_bytes=self.max_bytes)
+                    template, payload = self.consolidation_request(candidate, event["neighbors"], sources)
+                    value = call_model("task_consolidation", template, payload, services=services,
+                                       event=model_event, save=save_updates, max_bytes=self.max_bytes)
                 except PromptOverflow as error:
                     event.update(operation="defer", status="budget_limited", reason=str(error))
                     result.status, result.degraded, result.error = "degraded", True, str(error)
